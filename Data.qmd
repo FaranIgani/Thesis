@@ -258,8 +258,8 @@ process_one_game <- function(game_df, players) {
   wide
 }
 
-# run on all nba_pbp_2025 
-out_full <- nba_pbp_2025 %>%
+# run on all 20 seasons nba_pbp 
+out_full <- nba_pbp %>%
   group_by(game_id) %>%
   group_split() %>%
   map_df(~ process_one_game(.x, players))
