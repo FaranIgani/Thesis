@@ -1,0 +1,863 @@
+---
+title: "Plots"
+format: pdf
+editor: visual
+---
+
+## Data
+
+```{r}
+library(tidyverse)
+```
+
+![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACgAAAAaCAYAAADFTB7LAAAEj0lEQVR4XrVX+1NTRxTmJ6fTP8I+/o6W/6oD09FJhlcCRogtoVSQYhUjsTG8ArkkmkotBBGoPAoiUMg7uXmQhDx15nS/DbnGNegNjzNz5t7dPXu+L+dxd9PQcA5xOp1XZ6QnzUwlpj6mBaYZplszDpcDa5IkfSPuu3RxOFzf2x3OB66nz+jl6hq93t2nw0CIAhGZ/OEo7Xv9tP1mn6+5ns4RbLFH9HMpYp+e7Zx1/Umb2zsUZIRCcpzCsY8V86FojIJRmTa2dgh7Ju3OLtHfhYnFYrkyaXf0zv3tIV8oQmFGIBJLUCSeoGg8SdFEkpgZV4wxj3XYBRlR7Hm+8IKm7JLJ7XZ/Ifo/t4xNzZg8SyssMjEeIRCQGalY8ohpiuJHKYUgxpjHOuzKEY1RgEXT82KF4Ev0fy4ZG7d3PXu+oJBDhGRGAKQSqTQloemMQhBjzGMddrBXSLKygC/4FHHOJI8fT3w3NT1bTusJOUQH4Ml0mo4yGUpljil1nFUIYox5rMMO9hWSSLc3GKbJaYms4/ZGEa9usVgnRl5tbJVrDmlVyJWJpRmxTDZHmVxOIYgx5rEOu0okebp5Tcr0z8a/NGodN4t4dcmI1fqVbcJOoUiMFzxqqhI5Ti6bpWNGLJvPUy5fUAhijHmsl0mepBs1yfyguwORKNnG7QQMEVe1jJgfNf01v8g/Gfj1SBVqC+lDhMrkCpQvFClfLCoEMcY8J8nsYI992A8/8IdanJv3EDBEXNVyf2TUsb71uqr2UrwBEBWkEZECmUKpRMXSW4UgxmWSeW7Ho8gJpqpqUaa1zW0ChoirWobvmf3/eQNlgkp6M7whUHNIKyIHcqV37xSCGGMe67CDfaUW4afSLHuHPgKGiKtahobvFXB01SKI9OUKBSoUWfTeMoIsSg0nBGtpLYLo5qHh+8UqyPpk4M7dUwlWR7DA1pIG40ekqvU0ggzj7AT7B37z73t9n6zBXDhCyY4uSjRdo+zaOk+v2hrcPfASMERc1dLXPyitrm+e2sWZQy8ltO2UuKal7O4eTzciqraLV9Y2qK//ztmbpLfvdpP0xM2/W+J38GjnDcUZsURLBx37/DzdqEk81X4HHS43AUPEVS09Pb98PTB0lzv74CR5tU7x5uuU6OymNEtx5SQBKTzVnCQ4Om8z38AQceuS7lt95oWlZV7UqB3Zs0TxH36k+E99lJTlD85iRT9zFiO984svCb5FvLrFYDQ2mn4d5Ddm3EZks4Vig8MkMzCAV99mFP3MbebAHyRT/yDBt4h3Juk0GLse/mHj97lQIMjBat0HK/qp+yA+Ww8f2Qg+RZxzie5Gt8k2Oc0BeLpr3KgVrXGjrvxfYZdVgi/R/7lFo9Fcadcben8fGeUpQqGjG9X8J+Fp9QXpgcVK7TqDSavVfin6vzBp6ejq7L5lItxy/KyDAQ4SiNJ7LZNC96NbcWvBnlbdjYtN62nS1qZvbGnVm28af6YxlvbF5VXa2TvgRxcU757lFb7Ww4jBFntEP5cuGo3+qqZN36xt1UmaVp2fPUvQk3cJaxqN7ltxXz3yP7PdXZ4tsKsDAAAAAElFTkSuQmCC "Run Current Chunk")
+
+```{r}
+nba <- read.csv("one_season.csv")
+```
+
+```{r}
+View(nba)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# choose player
+perf_col  <- "Perf_jayson_tatum"
+dperf_col <- "dPerf_jayson_tatum"
+
+# select varaibles from df
+df <- nba %>%
+  select(game_id, row_id, clock_display_value, !!perf_col, !!dperf_col) %>%
+  rename(perf = !!perf_col, dperf = !!dperf_col)
+
+# First game he appears in
+first_game_id <- df %>% filter(!is.na(perf)) %>% slice_min(game_id, with_ties = FALSE) %>% pull(game_id)
+
+# Trim that game to the last change in Perf (last nonzero dPerf),
+# then build a monotone play index for the x-axis
+g <- df %>%
+  filter(game_id == first_game_id) %>%
+  arrange(row_id) %>%
+  mutate(
+    i = row_number(),
+    last_change = suppressWarnings(max(i[!is.na(dperf) & dperf != 0])),
+    last_value  = suppressWarnings(max(i[!is.na(perf)])),
+    cutoff      = ifelse(is.finite(last_change), last_change, last_value)
+  ) %>%
+  filter(is.finite(cutoff), i <= cutoff) %>%
+  mutate(play_idx = row_number())   # x-axis (no duplicate times -> no vertical spikes)
+
+# Plot: follows raw Perf (up and down), x = play index
+ggplot(g, aes(x = play_idx, y = perf)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = paste("Jayson Tatum Performance Score (Game", first_game_id,")"),
+    x = "Play index",
+    y = "Performance metric"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# --- choose columns once ---
+perf_col  <- "Perf_jayson_tatum"
+dperf_col <- "dPerf_jayson_tatum"
+
+df <- nba %>%
+  select(game_id, row_id, clock_display_value, !!perf_col, !!dperf_col) %>%
+  rename(perf = !!perf_col, dperf = !!dperf_col)
+
+# First game he appears in
+first_game_id <- df %>%
+  filter(!is.na(perf)) %>%
+  slice_min(game_id, with_ties = FALSE) %>%
+  pull(game_id)
+
+# Trim to last nonzero dPerf and build per-game play index
+g <- df %>%
+  filter(game_id == first_game_id) %>%
+  arrange(row_id) %>%
+  mutate(
+    i = row_number(),
+    last_change = suppressWarnings(max(i[!is.na(dperf) & dperf != 0])),
+    last_value  = suppressWarnings(max(i[!is.na(perf)])),
+    cutoff      = ifelse(is.finite(last_change), last_change, last_value)
+  ) %>%
+  filter(is.finite(cutoff), i <= cutoff) %>%
+  mutate(play_idx = row_number())
+
+# ---- Plot A: dPerf as bars (impulses) ----
+ggplot(g, aes(x = play_idx, y = dperf)) +
+  geom_col(width = 0.9) +
+  geom_hline(yintercept = 0, linewidth = 0.6) +
+  labs(
+    title = paste("Jayson Tatum: dPerf by play (Game", first_game_id, ")"),
+    subtitle = "Positive bars = gains; Negative bars = losses. Trimmed at last change.",
+    x = "Play index (within game)", y = "dPerf"
+  ) +
+  theme_minimal(base_size = 13)
+
+# ---- Plot B (optional): dPerf line with points ----
+ggplot(g, aes(x = play_idx, y = dperf)) +
+  geom_line(linewidth = 0.7) +
+  geom_point(size = 1.6) +
+  geom_hline(yintercept = 0, linewidth = 0.6) +
+  labs(
+    title = paste("Jayson Tatum: Difference of Performance Score (Game", first_game_id,")"),
+    x = "Play index (within game)", y = "dPerf"
+  ) +
+  theme_minimal(base_size = 13)
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# --- columns (easy to switch players) ---
+perf_col  <- "Perf_jayson_tatum"
+dperf_col <- "dPerf_jayson_tatum"
+
+df <- nba %>%
+  select(game_id, row_id, clock_display_value, !!perf_col, !!dperf_col) %>%
+  rename(perf = !!perf_col, dperf = !!dperf_col) %>%
+  arrange(row_id)
+
+# 1) Find the first 3 games where Perf becomes non-zero (in timeline order)
+games_first3 <- df %>%
+  group_by(game_id) %>%
+  summarise(first_nonzero_row = suppressWarnings(min(row_id[!is.na(perf) & perf != 0])),
+            .groups = "drop") %>%
+  filter(is.finite(first_nonzero_row)) %>%
+  arrange(first_nonzero_row) %>%
+  slice_head(n = 3) %>%
+  pull(game_id)
+
+# 2) For those games: start at first non-zero Perf, stop at last non-zero dPerf
+g3 <- df %>%
+  filter(game_id %in% games_first3) %>%
+  arrange(game_id, row_id) %>%
+  group_by(game_id) %>%
+  mutate(
+    i           = row_number(),
+    start_i     = suppressWarnings(min(i[!is.na(perf) & perf != 0])),                # first non-zero Perf
+    last_change = suppressWarnings(max(i[!is.na(dperf) & dperf != 0])),              # last change
+    last_value  = suppressWarnings(max(i[!is.na(perf)])),
+    cutoff      = ifelse(is.finite(last_change), last_change, last_value)
+  ) %>%
+  filter(is.finite(start_i), i >= start_i, i <= cutoff) %>%
+  mutate(play_idx = row_number()) %>%  # <-- index restarts at 1 for each game
+  ungroup()
+
+# 3A) Overlay plot (one color per game), follows raw Perf (up & down)
+ggplot(g3, aes(x = play_idx, y = perf, group = game_id, color = as.factor(game_id))) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Jayson Tatum: Perfermance metric (first 3 games)",
+    x = "Play index (within game)", y = "Perf", color = "game_id"
+  ) +
+  theme_minimal(base_size = 13)
+
+# 3B) Facets: one panel per game (cleanest read)
+ggplot(g3, aes(x = play_idx, y = perf, group = 1)) +
+  geom_line(linewidth = 1, color = "grey25") +
+  facet_wrap(~ game_id, scales = "free_x") +
+  labs(
+    title = "Jayson Tatum: Performance Metric (first 3 games)",
+    x = "Play index", y = "Perf"
+  ) +
+  theme_minimal(base_size = 12)
+
+
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+
+# Select player columns 
+perf_cols  <- c("Perf_jayson_tatum",  "Perf_jaylen_brown",  "Perf_derrick_white")
+dperf_cols <- c("dPerf_jayson_tatum", "dPerf_jaylen_brown", "dPerf_derrick_white")
+
+#Build tidy long frame
+df_long <- nba %>%
+  select(game_id, row_id, clock_display_value, all_of(perf_cols), all_of(dperf_cols)) %>%
+  pivot_longer(
+    cols = c(all_of(perf_cols), all_of(dperf_cols)),
+    names_to = c(".value", "player"),
+    names_pattern = "^(d?Perf)_(.*)$"   # <-- capital P, matches your actual columns
+  )
+
+# Find first game where any of the three players has data 
+first_game_id <- df_long %>%
+  filter(!is.na(Perf)) %>%
+  arrange(row_id) %>%
+  slice(1) %>%
+  pull(game_id)
+
+# Trim each player to first non-zero Perf and last non-zero dPerf
+g <- df_long %>%
+  filter(game_id == first_game_id) %>%
+  arrange(player, row_id) %>%
+  group_by(player) %>%
+  mutate(
+    i           = row_number(),
+    start_i     = suppressWarnings(min(i[!is.na(Perf) & Perf != 0])),
+    last_change = suppressWarnings(max(i[!is.na(dPerf) & dPerf != 0])),
+    last_value  = suppressWarnings(max(i[!is.na(Perf)])),
+    cutoff      = ifelse(is.finite(last_change), last_change, last_value)
+  ) %>%
+  filter(is.finite(start_i), i >= start_i, i <= cutoff) %>%
+  group_by(player) %>%
+  mutate(play_idx = row_number()) %>%     # restart x-axis per player
+  ungroup() %>%
+  mutate(player_label = str_to_title(gsub("_", " ", player)))
+
+# Plot all three lines
+ggplot(g, aes(x = play_idx, y = Perf, color = player_label)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = paste("Celtics: Performance of 3 Players (Game", first_game_id, ")"),
+    x = "Play index (within game)",
+    y = "Performance Score",
+    color = NULL
+  ) +
+  theme_minimal(base_size = 13)
+
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+
+#Explicit player columns
+perf_cols  <- c("Perf_jayson_tatum",  "Perf_jaylen_brown",  "Perf_derrick_white")
+dperf_cols <- c("dPerf_jayson_tatum", "dPerf_jaylen_brown", "dPerf_derrick_white")
+
+#1) Find Tatum's first 3 games (where his Perf is non-zero)
+tatum_games <- nba %>%
+  select(game_id, row_id, Perf_jayson_tatum) %>%
+  arrange(row_id) %>%
+  group_by(game_id) %>%
+  summarise(first_nonzero_row = suppressWarnings(
+              min(row_id[!is.na(Perf_jayson_tatum) & Perf_jayson_tatum != 0])
+            ),
+            .groups = "drop") %>%
+  filter(is.finite(first_nonzero_row)) %>%
+  arrange(first_nonzero_row) %>%
+  slice_head(n = 3) %>%
+  pull(game_id)
+
+# 2) Build a per-game play index (shared across players)
+idx_tbl <- nba %>%
+  filter(game_id %in% tatum_games) %>%
+  arrange(game_id, row_id) %>%
+  group_by(game_id) %>%
+  mutate(play_idx = row_number()) %>%
+  ungroup() %>%
+  select(game_id, row_id, play_idx)
+
+# 3) Long format perf/dPerf for our three players
+df_long <- nba %>%
+  filter(game_id %in% tatum_games) %>%
+  select(game_id, row_id, clock_display_value, all_of(perf_cols), all_of(dperf_cols)) %>%
+  pivot_longer(
+    cols = c(all_of(perf_cols), all_of(dperf_cols)),
+    names_to   = c(".value", "player"),
+    names_pattern = "^(d?Perf)_(.*)$"    # captures Perf / dPerf as .value, rest as player
+  )
+
+#  4) For each (game, player): find start/stop rows based on Perf / dPerf
+bounds <- df_long %>%
+  group_by(game_id, player) %>%
+  arrange(row_id, .by_group = TRUE) %>%
+  summarise(
+    start_row = {
+      x <- Perf
+      idx <- which(!is.na(x) & x != 0)
+      if (length(idx)) row_id[min(idx)] else NA_integer_
+    },
+    end_row = {
+      y <- dPerf
+      idx <- which(!is.na(y) & y != 0)
+      if (length(idx)) row_id[max(idx)] else {
+        x <- Perf
+        idx2 <- which(!is.na(x))
+        if (length(idx2)) row_id[max(idx2)] else NA_integer_
+      }
+    },
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(start_row), !is.na(end_row))
+
+# 5) Join bounds + play_idx and trim to each player's active window
+g3 <- df_long %>%
+  inner_join(bounds, by = c("game_id", "player")) %>%
+  inner_join(idx_tbl, by = c("game_id", "row_id")) %>%
+  filter(row_id >= start_row, row_id <= end_row) %>%
+  mutate(
+    player_label = str_to_title(gsub("_", " ", player))
+  )
+
+# 6) Plot: three players over Tatum's first 3 games
+
+# Faceted by game (cleanest view)
+ggplot(g3, aes(x = play_idx, y = Perf,
+               color = player_label,
+               group = interaction(player_label, game_id))) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ game_id, scales = "free_x") +
+  labs(
+    title = "Celtics: Performance of Players (First 3 games)",
+    x = "Play index (within game)",
+    y = "Performance Score",
+    color = NULL
+  ) +
+  theme_minimal(base_size = 13)
+
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+tatum_finals <- nba %>%
+  select(game_id, row_id, Perf_jayson_tatum) %>%
+  arrange(game_id, row_id) %>%
+  group_by(game_id) %>%
+  summarise(
+    final_perf = {
+      x <- Perf_jayson_tatum
+      idx <- which(!is.na(x) & x != 0)
+      if (length(idx) == 0) NA_real_ else x[max(idx)]
+    },
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(final_perf))
+
+
+ggplot(tatum_finals, aes(x = final_perf)) +
+  geom_histogram(bins = 25, fill = "steelblue", color = "white") +
+  labs(
+    title = "Distribution of Jayson Tatum's Performance Scores",
+    x = "Final Perf per Game",
+    y = "Count of Games"
+  ) +
+  theme_minimal(base_size = 14)
+
+ggplot(tatum_finals, aes(x = factor(game_id), y = final_perf)) +
+  geom_col(fill = "darkgreen") +
+  labs(
+    title = "Jayson Tatum's Performance Scores Over the Season",
+    x = "Game ID",
+    y = "Final Perf"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_blank())
+
+
+
+```
+
+```{r}
+nba_3 <- read.csv("out_full_1.csv")
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# work from Tatum's column only
+tatum_df <- nba_3 %>%
+  select(game_id, row_id, game_time_min, Perf_jayson_tatum) %>%
+  filter(!is.na(Perf_jayson_tatum))
+
+# first game he appears in (by timeline)
+first_game_id <- tatum_df %>%
+  arrange(game_id, row_id) %>%
+  slice(1) %>%
+  pull(game_id)
+
+tatum_g1 <- tatum_df %>%
+  filter(game_id == first_game_id) %>%
+  arrange(row_id) %>%
+  mutate(
+    i        = row_number(),
+    diffPerf = Perf_jayson_tatum - dplyr::lag(Perf_jayson_tatum, default = 0),
+    last_change = suppressWarnings(max(i[diffPerf != 0])),
+    last_value  = max(i),
+    cutoff      = ifelse(is.finite(last_change), last_change, last_value)
+  ) %>%
+  filter(i <= cutoff)
+
+ggplot(tatum_g1, aes(x = game_time_min, y = Perf_jayson_tatum)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = paste("Jayson Tatum Perf, Game", first_game_id),
+    x = "Game time (minutes, 0–48)",
+    y = "Perf"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+tatum_df <- nba_3 %>%
+  select(game_id, row_id, game_time_min, Perf_jayson_tatum)
+
+tatum_games3 <- tatum_df %>%
+  group_by(game_id) %>%
+  summarize(
+    first_nonzero_row = {
+      x <- row_id[!is.na(Perf_jayson_tatum) & Perf_jayson_tatum != 0]
+      if (length(x) == 0) NA_integer_ else min(x)
+    },
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(first_nonzero_row)) %>%
+  arrange(first_nonzero_row) %>%
+  slice_head(n = 3) %>%
+  pull(game_id)
+
+tatum_g3 <- tatum_df %>%
+  filter(game_id %in% tatum_games3) %>%
+  arrange(game_id, row_id) %>%
+  group_by(game_id) %>%
+  mutate(
+    i = row_number(),
+    diffPerf = Perf_jayson_tatum - dplyr::lag(Perf_jayson_tatum, default = 0),
+
+    start_i = {
+      idx <- which(!is.na(Perf_jayson_tatum) & Perf_jayson_tatum != 0)
+      if (length(idx) == 0) NA_integer_ else min(idx)
+    },
+    last_change = {
+      idx <- which(!is.na(diffPerf) & diffPerf != 0)
+      if (length(idx) == 0) NA_integer_ else max(idx)
+    },
+    last_value = {
+      idx <- which(!is.na(Perf_jayson_tatum))
+      if (length(idx) == 0) NA_integer_ else max(idx)
+    },
+    cutoff = ifelse(is.na(last_change), last_value, last_change)
+  ) %>%
+  filter(!is.na(start_i), i >= start_i, i <= cutoff) %>%
+  ungroup()
+
+ggplot(tatum_g3, aes(x = game_time_min, y = Perf_jayson_tatum)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ game_id, scales = "free_x") +
+  labs(
+    title = "Jayson Tatum Perf vs Game Time (First Three Games)",
+    x = "Game time (minutes, 0–48)",
+    y = "Perf"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+perf_cols <- c("Perf_jayson_tatum", "Perf_jaylen_brown", "Perf_derrick_white")
+
+df_long <- nba_3 %>%
+  filter(game_id %in% tatum_games3) %>%
+  select(game_id, row_id, game_time_min, all_of(perf_cols)) %>%
+  pivot_longer(
+    cols = all_of(perf_cols),
+    names_to = "player_col",
+    values_to = "Perf"
+  ) %>%
+  mutate(
+    player_key   = sub("^Perf_", "", player_col),
+    player_label = str_to_title(gsub("_", " ", player_key))
+  )
+
+bounds <- df_long %>%
+  group_by(game_id, player_label) %>%
+  arrange(row_id, .by_group = TRUE) %>%
+  mutate(
+    diffPerf = Perf - dplyr::lag(Perf, default = 0)
+  ) %>%
+  summarize(
+    start_row = {
+      x <- row_id[!is.na(Perf) & Perf != 0]
+      if (length(x) == 0) NA_integer_ else min(x)
+    },
+    end_row = {
+      idx <- which(!is.na(diffPerf) & diffPerf != 0)
+      if (length(idx) > 0) {
+        max(row_id[idx])
+      } else {
+        x <- row_id[!is.na(Perf)]
+        if (length(x) == 0) NA_integer_ else max(x)
+      }
+    },
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(start_row), !is.na(end_row))
+
+g_players <- df_long %>%
+  inner_join(bounds, by = c("game_id", "player_label")) %>%
+  filter(row_id >= start_row, row_id <= end_row)
+
+ggplot(g_players,
+       aes(x = game_time_min, y = Perf,
+           color = player_label,
+           group = interaction(player_label, game_id))) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ game_id, scales = "free_x") +
+  labs(
+    title = "Celtics Perf vs Game Time (Tatum, Brown, White – First Three Tatum Games)",
+    x = "Game time (minutes, 0–48)",
+    y = "Perf",
+    color = NULL
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+nba_rate <- read.csv("out_full_1_rate.csv")
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+tatum_rates <- nba_rate %>%
+  select(game_id, row_id, game_time_min,
+         Perf_jayson_tatum, Perf_rate_jayson_tatum) %>%
+  filter(game_id == 401703370)  # replace with a real game_id
+
+ggplot(tatum_rates, aes(x = game_time_min, y = Perf_rate_jayson_tatum)) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_line(linewidth = 0.9) +
+  labs(
+    title = "Jayson Tatum performance rate over time",
+    x = "Game time (minutes)",
+    y = "Perf change per minute"
+  ) +
+  theme_minimal(base_size = 13)
+
+```
+
+```{r}
+tatum_game_summary <- nba_rate %>%
+  group_by(game_id) %>%
+  summarise(
+    final_perf   = max(Perf_jayson_tatum, na.rm = TRUE),
+    max_spike    = max(Perf_rate_jayson_tatum, na.rm = TRUE),
+    worst_slump  = min(Perf_rate_jayson_tatum, na.rm = TRUE),
+    .groups = "drop"
+  )
+tatum_game_summary
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+shai_rates <- nba_rate %>%
+  select(game_id, row_id, game_time_min,
+         Perf_shai_gilgeous_alexander, Perf_rate_shai_gilgeous_alexander) %>%
+  filter(game_id == 401703387)  # replace with a real game_id 401703387 401703417
+
+ggplot(shai_rates, aes(x = game_time_min, y = Perf_rate_shai_gilgeous_alexander)) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_line(linewidth = 0.9) +
+  labs(
+    title = "Shai Gilgeous Alexander rate over time",
+    x = "Game time (minutes)",
+    y = "Perf change per minute"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+shai_game_summary <- nba_rate %>%
+  group_by(game_id) %>%
+  filter(any(Perf_shai_gilgeous_alexander > 0, na.rm = TRUE))%>%   # keep only games he played
+  summarise(
+    final_perf  = max(Perf_shai_gilgeous_alexander, na.rm = TRUE),
+    max_spike   = max(Perf_rate_shai_gilgeous_alexander, na.rm = TRUE),
+    worst_slump = min(Perf_rate_shai_gilgeous_alexander, na.rm = TRUE),
+    .groups = "drop"
+  )
+shai_game_summary
+```
+
+```{r}
+summarize_player <- function(df, player_name) {
+  suf <- clean_suffix(player_name)
+  perf_col  <- paste0("Perf_", suf)
+  rate_col  <- paste0("Perf_rate_", suf)
+
+  df %>%
+    group_by(game_id) %>%
+     filter(any(.data[[perf_col]] > 0, na.rm = TRUE)) %>%
+    summarise(
+      final_perf  = max(.data[[perf_col]], na.rm = TRUE),
+      max_spike   = max(.data[[rate_col]], na.rm = TRUE),
+      worst_slump = min(.data[[rate_col]], na.rm = TRUE),
+      .groups = "drop"
+    )
+}
+```
+
+```{r}
+library(stringr)
+
+shai_summary <- summarize_player(nba_rate, "Shai Gilgeous-Alexander")
+tatum_summary <- summarize_player(nba_rate, "Jayson Tatum")
+jokic_summary  <- summarize_player(nba_rate, "Nikola Jokic")
+shai_summary
+tatum_summary
+jokic_summary
+```
+
+```{r}
+nba_norm <- read.csv("out_full_1_norm.csv")
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+plot_player_norm_traces <- function(nba_norm, player_name, alpha = 0.15) {
+  suf      <- clean_suffix(player_name)
+  norm_col <- paste0("NormPerf_", suf)
+
+  if (!norm_col %in% names(nba_norm)) {
+    stop("Column ", norm_col, " not found in df. Did this player exist in your Perf list?")
+  }
+
+  df_player <- nba_norm %>%
+    filter(!is.na(.data[[norm_col]])) %>%
+    group_by(game_id) %>%
+    # keep only games where this player actually has positive Perf at some point
+    filter(any(.data[[norm_col]] > 0, na.rm = TRUE)) %>%
+    ungroup()
+
+  ggplot(df_player,
+         aes(x = game_time_min,
+             y = .data[[norm_col]],
+             group = game_id)) +
+    geom_line(alpha = alpha, linewidth = 0.3) +
+    stat_summary(
+      fun = mean,
+      geom = "line",
+      linewidth = .4,
+      color = "grey40"
+    ) +
+    labs(
+      title = paste(player_name, "– Normalized Perf over all games"),
+      x = "Game time (minutes, 0–48)",
+      y = "Normalized Perf"
+    ) +
+    theme_minimal(base_size = 13)
+}
+
+```
+
+```{r}
+plot_player_norm_traces(nba_norm, "Shai Gilgeous-Alexander")
+
+```
+
+```{r}
+plot_player_norm_traces <- function(nba_norm, player_name, alpha = 0.08) {
+  suf      <- clean_suffix(player_name)
+  norm_col <- paste0("NormPerf_", suf)
+
+  if (!norm_col %in% names(nba_norm)) {
+    stop("Column ", norm_col, " not found in df.")
+  }
+
+  df_player <- nba_norm %>%
+    filter(!is.na(.data[[norm_col]])) %>%
+    group_by(game_id) %>%
+    filter(any(.data[[norm_col]] > 0, na.rm = TRUE)) %>%
+    ungroup()
+
+ ggplot(df_player, aes(x = game_time_min, y = .data[[norm_col]])) +
+  geom_line(aes(group = game_id), color = "grey70", alpha = 0.2, linewidth = 0.35) +
+  geom_smooth(aes(group = 1), method = "lm", se = FALSE, color = "red", linewidth = .8) +
+coord_cartesian(ylim = c(0, 1)) +
+  labs(
+    title = paste(player_name, "Normalized performance over games"),
+    x = "Game time (minutes)",
+    y = "Normalized Perf (0–1)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(panel.grid.minor = element_blank())
+}
+
+```
+
+```{r}
+plot_player_norm_traces(nba_norm, "Shai Gilgeous-Alexander")
+```
+
+```{r}
+plot_player_norm_traces <- function(nba_norm, player_name, alpha = 0.08) {
+  suf      <- clean_suffix(player_name)
+  norm_col <- paste0("NormPerf_", suf)
+
+  if (!norm_col %in% names(nba_norm)) {
+    stop("Column ", norm_col, " not found in df.")
+  }
+
+  df_player <- nba_norm %>%
+    filter(!is.na(.data[[norm_col]])) %>%
+    group_by(game_id) %>%
+    filter(any(.data[[norm_col]] > 0, na.rm = TRUE)) %>%
+    ungroup()
+
+ggplot(df_player, aes(x = game_time_min, y = .data[[norm_col]])) +
+  geom_line(aes(group = game_id), color = "grey70", alpha = 0.2, linewidth = 0.35) +
+  geom_smooth(aes(group = 1), method = "loess", se = FALSE, color = "red", linewidth = .8, span = 0.25) +
+  labs(
+    title = paste(player_name, "Normalized performance over games"),
+    x = "Game time (minutes)",
+    y = "Normalized Perf (0–1)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(panel.grid.minor = element_blank())
+}
+```
+
+```{r}
+plot_player_norm_traces(nba_norm, "Shai Gilgeous-Alexander")
+```
+
+```{r}
+plot_player_norm_traces(nba_norm, " De Aaron Fox")
+```
+
+```{r}
+#Total Positive Perf Gain (TPPG)
+#Heating Rate Integral (HRI)
+#Momentum Clustering Score (MCS) captures streaks
+summarize_player_hotness <- function(df, player_name) {
+
+  suf       <- clean_suffix(player_name)
+  perf_col  <- paste0("Perf_", suf)
+  rate_col  <- paste0("Perf_rate_", suf)
+
+  if (!all(c(perf_col, rate_col) %in% names(df))) {
+    stop("Missing Perf or Perf_rate column for ", player_name)
+  }
+
+  df %>%
+    select(game_id, row_id, game_time_min,
+           perf = all_of(perf_col),
+           rate = all_of(rate_col)) %>%
+    group_by(game_id) %>%
+    arrange(row_id, .by_group = TRUE) %>%
+    mutate(
+      # local derivative (event-to-event)
+      dPerf = perf - dplyr::lag(perf),
+
+      dTime = game_time_min - dplyr::lag(game_time_min)
+    ) %>%
+    summarise(
+      # 1. Total Positive Performance Gain
+      TPPG = sum(pmax(dPerf, 0), na.rm = TRUE),
+
+      # 3. Heating Rate Integral
+      HRI  = sum(pmax(rate, 0) * dTime, na.rm = TRUE),
+
+      # 5. Momentum Clustering Score
+      MCS = {
+      pos_jump <- !is.na(dPerf) & dPerf > 0
+     r <- rle(pos_jump)
+      sum((r$lengths[r$values])^2)
+      },
+
+      final_perf = max(perf, na.rm = TRUE),
+
+      .groups = "drop"
+    ) %>%
+    # keep only games where the player actually played
+    filter(final_perf > 0)
+}
+
+```
+
+```{r}
+shai_hot  <- summarize_player_hotness(nba_norm, "Shai Gilgeous-Alexander")
+tatum_hot <- summarize_player_hotness(nba_norm, "Jayson Tatum")
+```
+
+```{r}
+shai_hot
+tatum_hot
+```
+
+```{r}
+shai_hot <- shai_hot %>%
+  mutate(
+    DOM = TPPG - final_perf,
+    ETPPG = final_perf / TPPG,
+    
+    HotIndex =
+      as.numeric(scale(-DOM)) +
+      as.numeric(scale(HRI)) +
+      as.numeric(scale(MCS))
+  )
+
+shai_hot
+```
+
+```{r}
+shai_first10 <- shai_hot %>%
+  arrange(game_id) %>%      # assumes increasing game_id over season
+  slice(1:10) %>%
+  mutate(game_num = row_number())
+
+suf <- clean_suffix("Shai Gilgeous-Alexander")
+perf_col <- paste0("Perf_", suf)
+
+shai_traces_10 <- nba_norm %>%
+  filter(game_id %in% shai_first10$game_id) %>%
+  select(game_id, game_time_min, perf = all_of(perf_col)) %>%
+  filter(!is.na(perf)) %>%
+  left_join(
+    shai_first10 %>% select(game_id, HotIndex, game_num),
+    by = "game_id"
+  )
+
+library(ggplot2)
+
+ggplot(
+  shai_traces_10,
+  aes(x = game_time_min, y = perf)
+) +
+  geom_line(color = "grey30", linewidth = 0.9) +
+  facet_wrap(
+    ~ paste0(
+        "Game ", game_num,
+        "  |  HotIndex = ", round(HotIndex, 2)
+      ),
+    ncol = 5
+  ) +
+  labs(
+    title = "Shai Gilgeous-Alexander First 10 games",
+    x = "Game time (minutes)",
+    y = "Perf"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    strip.text = element_text(size = 10)
+  )
+
+```

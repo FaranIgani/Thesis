@@ -1,0 +1,568 @@
+---
+title: "NullDist"
+format: html
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+#use fread or read.csv
+nba <- read.csv("shai_dperf.csv")
+nba <- nba %>%
+  filter(game_time_min <= 48)
+
+nba <- nba %>%
+  group_by(game_id) %>%
+  filter(sum(abs(dPerf_shai_gilgeous_alexander), na.rm = TRUE) > 10) %>%
+  ungroup()
+```
+
+```{r}
+nba
+```
+
+## Simulate Null (Bootstrapped)
+
+```{r}
+library(dplyr)
+library(purrr)
+library(tibble)
+
+#for one player
+
+prep_null_inputs_shai <- function(nba) {
+  # observed per-game event counts (nonzero, non-NA dPerf)
+  k_by_game <- nba %>%
+    filter(!is.na(dPerf_shai_gilgeous_alexander), dPerf_shai_gilgeous_alexander != 0) %>%
+    count(game_id, name = "k") %>%
+    pull(k)
+
+  # season-wide pool of score changes
+  dperf_pool <- nba %>%
+    filter(!is.na(dPerf_shai_gilgeous_alexander), dPerf_shai_gilgeous_alexander != 0) %>%
+    pull(dPerf_shai_gilgeous_alexander)
+
+  # number of games present in the dataset
+  n_games_in_nba <- nba %>% summarise(n = n_distinct(game_id)) %>% pull(n)
+
+  list(k_by_game = k_by_game, dperf_pool = dperf_pool, n_games_in_nba = n_games_in_nba)
+}
+
+simulate_one_null_game <- function(k_by_game, dperf_pool, sim_game,
+                                  t0 = 0, t1 = 48, start_perf = 0) {
+  k <- sample(k_by_game, size = 1)                # uniform over observed k's
+  times <- sort(runif(k, min = t0, max = t1))     # event times
+  dperf <- sample(dperf_pool, size = k, replace = TRUE)
+
+  tibble(
+    sim_game = sim_game,
+    event_id = seq_len(k),
+    game_time_min = times,
+    sim_dPerf = dperf
+  )
+}
+
+simulate_null_season_shai <- function(nba, n_games = NULL,
+                                      t0 = 0, t1 = 48, start_perf = 0) {
+  inp <- prep_null_inputs_shai(nba)
+
+
+  # ALL games in nba: leave n_games = NULL
+  # exactly 100: set n_games = 100
+  if (is.null(n_games)) n_games <- inp$n_games_in_nba
+
+  map_dfr(seq_len(n_games), ~simulate_one_null_game(
+    k_by_game = inp$k_by_game,
+    dperf_pool = inp$dperf_pool,
+    sim_game = .x,
+    t0 = t0, t1 = t1,
+    start_perf = start_perf
+  ))
+}
+
+
+# simulate x number games
+#null_games_82 <- simulate_null_season_shai(nba, n_games = 82)
+
+# simulate the whole dataset (# unique game_id in nba)
+null_games_all <- simulate_null_season_shai(nba, n_games = 100)   
+
+```
+
+```{r}
+null_games_all
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+g2 <- null_games_all %>%
+  filter(sim_game == 2) %>%
+  arrange(game_time_min, event_id) %>%
+  mutate(sim_Perf = cumsum(sim_dPerf))
+
+ggplot(g2, aes(x = game_time_min, y = sim_Perf)) +
+  geom_step() +
+  theme_minimal() +
+  labs(x = "Game time (min)", y = "Null performance (cumulative)")
+```
+
+```{r}
+null_perf_all <- null_games_all %>%
+  arrange(sim_game, game_time_min, event_id) %>%
+  group_by(sim_game) %>%
+  mutate(sim_Perf = cumsum(sim_dPerf)) %>%
+  ungroup()
+
+ggplot(null_perf_all,
+       aes(game_time_min,
+           sim_Perf,
+           group = sim_game)) +
+  geom_step(alpha = 0.15) +
+  theme_minimal() +
+  labs(x = "Game time (min)",
+       y = "Null cumulative performance")
+```
+
+```{r}
+#linear model
+trend_coefs <- null_perf_all %>%
+  group_by(sim_game) %>%
+  do({
+    fit <- lm(sim_Perf ~ game_time_min, data = .)
+    tibble(
+      intercept = coef(fit)[1],
+      slope = coef(fit)[2]
+    )
+  }) %>%
+  ungroup()
+
+#upper and lower bounds and slopes
+lower_int  <- quantile(trend_coefs$intercept, 0.05) #0.025 0.05
+upper_int  <- quantile(trend_coefs$intercept, 0.95) #0.975 0.95
+
+lower_slope <- quantile(trend_coefs$slope, 0.05)
+upper_slope <- quantile(trend_coefs$slope, 0.95)
+
+
+#build lines
+time_grid <- seq(min(null_perf_all$game_time_min),
+                 max(null_perf_all$game_time_min),
+                 length.out = 200)
+
+trend_lines <- tibble(
+  game_time_min = time_grid,
+  lower_line = lower_int + lower_slope * time_grid,
+  upper_line = upper_int + upper_slope * time_grid
+)
+
+
+#plot
+ggplot() +
+  # null games
+  geom_step(data = null_perf_all,
+            aes(game_time_min, sim_Perf, group = sim_game),
+            alpha = 0.15) +
+  # lower 95 trend line
+  geom_line(data = trend_lines,
+            aes(game_time_min, lower_line),
+            color = "red",
+            linewidth = .7) +
+  # upper 95 trend line
+  geom_line(data = trend_lines,
+            aes(game_time_min, upper_line),
+            color = "red",
+            linewidth = .7) +
+
+  theme_minimal() +
+ labs(
+    title = "Simulated Null Distribution for Shai",
+    x = "Game Time (Minutes)",
+    y = "Null Cumulative Performance"
+  )
+
+```
+
+## 90% Confidence Bounds over Real games
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# time grid for the two null trend lines
+time_grid <- seq(
+  min(nba$game_time_min, na.rm = TRUE),
+  max(nba$game_time_min, na.rm = TRUE),
+  length.out = 200
+)
+
+trend_lines_obs <- tibble(
+  game_time_min = time_grid,
+  lower_line = lower_int + lower_slope * game_time_min,
+  upper_line = upper_int + upper_slope * game_time_min
+)
+
+
+#filter any games not playing
+shai_games <- nba %>%
+  group_by(game_id) %>%
+  filter(any(!is.na(dPerf_shai_gilgeous_alexander) &
+             dPerf_shai_gilgeous_alexander != 0)) %>%
+  ungroup()
+
+
+# plot Shai observed perf with null bounds
+ggplot() +
+  geom_step(data = shai_games,
+            aes(game_time_min,
+                Perf_shai_gilgeous_alexander,
+                group = game_id),
+            alpha = 0.15,
+            linewidth = 0.7) +
+  geom_line(data = trend_lines_obs,
+            aes(game_time_min, lower_line),
+            color = "red",
+            linewidth = 0.7) +
+  geom_line(data = trend_lines_obs,
+            aes(game_time_min, upper_line),
+            color = "red",
+            linewidth = 0.7) +
+  theme_minimal() +
+  labs(
+    title = "Observed Shai Performance with Null 90% Trend Bounds",
+    x = "Game Time (Minutes)",
+    y = "Performance Score"
+  )
+```
+
+## Threshold to filter out games (instead of minutes played)
+
+```{r}
+game_activity <- shai_games %>%
+  group_by(game_id) %>%
+  summarise(
+    total_activity = sum(abs(dPerf_shai_gilgeous_alexander), na.rm = TRUE)
+  )
+
+summary(game_activity$total_activity)
+
+hist(game_activity$total_activity, breaks = 30)
+
+```
+
+```{r}
+mean(game_activity$total_activity)
+sd(game_activity$total_activity)
+```
+
+## Simulated Nulls for all players
+
+```{r}
+library(tidyverse)
+nba_full <- read.csv("full_1_94_dperf.csv")
+nba_full <- nba_full %>%
+  filter(game_time_min <= 48)
+
+```
+
+```{r}
+library(dplyr)
+library(stringr)
+
+players <- names(nba_full) %>%
+  str_subset("^Perf_") %>%
+  str_remove("^Perf_")
+
+filter_player_games <- function(data, player, threshold = 10){
+
+  dperf_col <- paste0("dPerf_", player)
+
+  data %>%
+    group_by(game_id) %>%
+    filter(sum(abs(.data[[dperf_col]]), na.rm = TRUE) > threshold) %>%
+    ungroup()
+}
+
+```
+
+```{r}
+#bootstrap null per player
+set.seed(1234)
+simulate_null_player <- function(data, player){
+
+  dperf_col <- paste0("dPerf_", player)
+
+  # distribution inputs
+  k_by_game <- data %>%
+    filter(!is.na(.data[[dperf_col]]), .data[[dperf_col]] != 0) %>%
+    count(game_id) %>%
+    pull(n)
+
+  dperf_pool <- data %>%
+    filter(!is.na(.data[[dperf_col]]), .data[[dperf_col]] != 0) %>%
+    pull(.data[[dperf_col]])
+
+  # simulate
+  map_dfr(seq_along(unique(data$game_id)), function(g){
+
+    k <- sample(k_by_game, 1)
+
+    tibble(
+      player = player,
+      sim_game = g,
+      event_id = seq_len(k),
+      game_time_min = sort(runif(k,0,48)),
+      sim_dPerf = sample(dperf_pool, k, replace=TRUE)
+    )
+
+  })
+}
+
+```
+
+```{r}
+#build nulls
+build_null_perf <- function(null_df){
+
+  null_df %>%
+    arrange(player, sim_game, game_time_min) %>%
+    group_by(player, sim_game) %>%
+    mutate(sim_Perf = cumsum(sim_dPerf)) %>%
+    ungroup()
+}
+
+```
+
+```{r}
+#get bounds
+get_trend_bounds <- function(null_perf){
+
+  coefs <- null_perf %>%
+    group_by(player, sim_game) %>%
+    do({
+      fit <- lm(sim_Perf ~ game_time_min, data=.)
+      tibble(
+        intercept = coef(fit)[1],
+        slope = coef(fit)[2]
+      )
+    }) %>%
+    ungroup()
+
+  coefs %>%
+    group_by(player) %>%
+    summarise(
+      lower_int = quantile(intercept, .05),
+      upper_int = quantile(intercept, .95),
+      lower_slope = quantile(slope, .05),
+      upper_slope = quantile(slope, .95)
+    )
+}
+
+```
+
+```{r}
+library(purrr)
+
+results <- map(players, function(p){
+
+  cat("Processing:", p, "\n")
+
+  filtered <- filter_player_games(nba_full, p, threshold = 10)
+
+  null_events <- simulate_null_player(filtered, p)
+
+  null_perf <- build_null_perf(null_events)
+
+  bounds <- get_trend_bounds(null_perf)
+
+  list(
+    player = p,
+    null_perf = null_perf,
+    bounds = bounds
+  )
+
+})
+
+```
+
+```{r}
+#combine null and bounds
+all_null_perf <- map_dfr(results, "null_perf")
+all_bounds <- map_dfr(results, "bounds")
+
+#plot simulated nulls
+ggplot(all_null_perf,
+       aes(game_time_min, sim_Perf, group = sim_game)) +
+  geom_step(alpha=.1, linewidth=.5) +
+  facet_wrap(~player, scales="free_y") +
+  theme_minimal()
+
+```
+
+```{r}
+#go through all real games
+real_long <- map_dfr(players, function(p){
+  
+  perf_col  <- paste0("Perf_", p)
+  dperf_col <- paste0("dPerf_", p)
+
+  nba_full %>%
+    #filter to games player actually played
+    group_by(game_id) %>%
+    filter(sum(abs(.data[[dperf_col]]), na.rm = TRUE) > 10) %>%
+    ungroup() %>%
+    
+    # build real_long slice
+    select(game_id, game_time_min, !!perf_col) %>%
+    rename(obs_perf = !!perf_col) %>%
+    mutate(player = p) %>%
+    
+    #drop NA perf rows
+    filter(!is.na(obs_perf))
+
+})
+
+#attach trend lines
+trend_lines <- all_bounds %>%
+  rowwise() %>%
+  do({
+
+    time_grid <- seq(0,48,length.out=200)
+
+    tibble(
+      player = .$player,
+      game_time_min = time_grid,
+      lower_line = .$lower_int + .$lower_slope*time_grid,
+      upper_line = .$upper_int + .$upper_slope*time_grid
+    )
+  })
+
+#plot observed perf score over trend lines
+#faceted all players in one window (crammed)
+# ggplot() +
+#   geom_step(data=real_long,
+#             aes(game_time_min, obs_perf, group=game_id),
+#             alpha=.05, linewidth=.2) +
+#   geom_line(data=trend_lines,
+#             aes(game_time_min, lower_line),
+#             color="red", linewidth=.25) +
+#   geom_line(data=trend_lines,
+#             aes(game_time_min, upper_line),
+#             color="red", linewidth=.25) +
+#   facet_wrap(~player, scales="free_y") +
+#   theme_minimal()
+
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+for(p in players){
+
+  p_real <- real_long %>% filter(player == p)
+
+  p_lines <- trend_lines %>% filter(player == p)
+
+  print(
+    ggplot() +
+      geom_step(data = p_real,
+                aes(game_time_min, obs_perf, group = game_id),
+                alpha = 0.25, linewidth = 0.5) +
+      geom_line(data = p_lines,
+                aes(game_time_min, lower_line),
+                color = "red", linewidth = 0.7) +
+      geom_line(data = p_lines,
+                aes(game_time_min, upper_line),
+                color = "red", linewidth = 0.7) +
+      theme_minimal() +
+      labs(
+        title = paste("Observed Games vs Null Trend Bounds:", p),
+        x = "Game Time (Minutes)",
+        y = "Performance"
+      )
+  )
+}
+
+```
+
+```{r}
+#detect games and times when plyers cross line
+library(dplyr)
+
+detect_heat_intervals_compact <- function(player_name, real_long, all_bounds, digits = 2) {
+
+  b <- all_bounds %>%
+    filter(player == player_name) %>%
+    select(upper_int, upper_slope) %>%
+    slice(1)
+
+  upper_int   <- b$upper_int
+  upper_slope <- b$upper_slope
+
+  intervals_long <- real_long %>%
+    filter(player == player_name) %>%
+    arrange(game_id, game_time_min) %>%
+    mutate(upper_line = upper_int + upper_slope * game_time_min,
+           above = obs_perf > upper_line) %>%
+    group_by(game_id) %>%
+    mutate(block = cumsum(above != lag(above, default = first(above)))) %>%
+    ungroup() %>%
+    filter(above) %>%
+    group_by(game_id, block) %>%
+    summarise(
+      t_in  = min(game_time_min, na.rm = TRUE),
+      t_out = max(game_time_min, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  intervals_long %>%
+    mutate(
+      t_in  = round(t_in, digits),
+      t_out = round(t_out, digits),
+      interval = paste0(t_in, "\u2013", t_out)
+    ) %>%
+    group_by(game_id) %>%
+    summarise(
+      n_intervals = n(),
+      intervals = paste(interval, collapse = "; "),
+      .groups = "drop"
+    ) %>%
+    arrange(game_id)
+}
+
+```
+
+```{r}
+detect_heat_intervals_compact("shai_gilgeous_alexander", real_long, all_bounds)
+
+```
+
+```{r}
+for(p in players){
+
+  out <- detect_heat_intervals_compact(p, real_long, all_bounds) %>%
+    mutate(player = p) %>%
+    select(player, everything())
+
+  cat("\n\n====", p, "====\n")
+  print(out)
+
+}
+```
+
+```{r}
+#table with all players and hot games
+heat_tables <- map_dfr(players, function(p){
+
+  detect_heat_intervals_compact(p, real_long, all_bounds) %>%
+    mutate(player = p) %>%
+    select(player, everything())
+
+})
+```
+
+```{r}
+heat_tables
+```

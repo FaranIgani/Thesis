@@ -1,0 +1,408 @@
+---
+title: "Data Convert Format"
+format: html
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+
+out_full_1S_100P_perf <- read.csv("out_full_1S_100P_perf.csv")
+```
+
+## Convert data to Long Format
+
+```{r}
+library(data.table)
+library(stringr)
+library(dplyr)
+library(tidyr)
+
+
+wide_to_long_perf_active <- function(df_wide,
+                                     out_file = "nba_long_perf_active.csv",
+                                     games_per_chunk = 10) {
+
+  DT <- as.data.table(df_wide)
+
+  # identify Perf columns
+  perf_cols <- names(DT)[grepl("^Perf_", names(DT))]
+
+  # id columns to keep
+  id_cols <- c("game_id","row_id","qtr","game_time_min","game_time_mmss","player_on_event")
+  id_cols <- id_cols[id_cols %in% names(DT)]
+
+  game_ids <- unique(DT$game_id)
+  n_chunks <- ceiling(length(game_ids) / games_per_chunk)
+
+  # start fresh output
+  if (file.exists(out_file)) file.remove(out_file)
+
+  for (k in seq_len(n_chunks)) {
+    idx <- ((k - 1) * games_per_chunk + 1):min(k * games_per_chunk, length(game_ids))
+    gset <- game_ids[idx]
+
+    chunk <- DT[game_id %in% gset, c(id_cols, perf_cols), with = FALSE]
+
+    # Convert "not playing" zeros to NA (so we can drop them)
+    for (col in perf_cols) {
+      set(chunk, i = which(chunk[[col]] == 0), j = col, value = NA_real_)
+    }
+
+    long <- melt(
+      chunk,
+      id.vars = id_cols,
+      measure.vars = perf_cols,
+      variable.name = "perf_col",
+      value.name = "Perf",
+      variable.factor = FALSE
+    )
+
+    # keep only rows where player actually had non-zero Perf
+    long <- long[!is.na(Perf)]
+
+    # parse player from Perf_ column name
+    long[, player := sub("^Perf_", "", perf_col)]
+    long[, perf_col := NULL]
+
+    # append chunk to CSV (doesn't hold everything in RAM)
+    fwrite(long, out_file, append = (k > 1))
+
+    rm(chunk, long)
+    gc()
+
+    message("Wrote chunk ", k, " / ", n_chunks)
+  }
+
+  out_file
+}
+
+```
+
+```{r}
+out_path <- wide_to_long_perf_active(nba_norm_wide, out_file = "nba_long_perf_active.csv", games_per_chunk = 10)
+
+```
+
+```{r}
+nba_long <- fread("nba_long_perf_active.csv")
+
+```
+
+```{r}
+View(nba_long)
+```
+
+```{r}
+library(data.table)
+library(stringr)
+
+wide_to_long_perf_keep_players <- function(df_wide,
+                                          out_file = "nba_long_perf_2.csv",
+                                          games_per_chunk = 5) {
+  DT <- as.data.table(df_wide)
+
+  # Perf columns only
+  perf_cols <- names(DT)[grepl("^Perf_", names(DT)) & !grepl("^Perf_rate_", names(DT)) & !grepl("^NormPerf_", names(DT))]
+
+  # columns to keep
+  id_cols <- c("game_id","row_id","qtr","game_time_min","game_time_mmss","player_on_event")
+  id_cols <- id_cols[id_cols %in% names(DT)]
+
+  game_ids <- unique(DT$game_id)
+  n_chunks <- ceiling(length(game_ids) / games_per_chunk)
+
+  if (file.exists(out_file)) file.remove(out_file)
+
+  for (k in seq_len(n_chunks)) {
+    idx <- ((k - 1) * games_per_chunk + 1):min(k * games_per_chunk, length(game_ids))
+    gset <- game_ids[idx]
+
+    chunk <- DT[game_id %in% gset, c(id_cols, perf_cols), with = FALSE]
+
+    # Build a per-game list of players who actually appear in player_on_event
+    # player_on_event looks like "Player A; Player B"
+    # We'll match these against your Perf_ suffixes by converting suffix -> display name
+    suffixes <- sub("^Perf_", "", perf_cols)
+    suffix_to_name <- function(s) str_replace_all(s, "_", " ")
+
+    # Map from display name -> suffix for fast lookup
+    name_map <- data.table(
+      player_name = tolower(vapply(suffixes, suffix_to_name, character(1))),
+      player      = suffixes
+    )
+
+    # For each game, extract all mentioned names
+    # (fast split of player_on_event; ignore NA)
+    mentioned <- chunk[!is.na(player_on_event),
+                       .(player_name = unlist(strsplit(tolower(player_on_event), "\\s*;\\s*"))),
+                       by = game_id]
+
+    mentioned <- unique(mentioned[player_name != ""])
+
+    # Join to known players (those with Perf_ cols)
+    game_players <- merge(mentioned, name_map, by = "player_name", all = FALSE)
+    keep_pairs <- unique(game_players[, .(game_id, player)])
+
+    perf_cols <- grep("^Perf_(?!rate_|norm)", names(chunk), value = TRUE, perl = TRUE)
+    
+    chunk[, (perf_cols) := lapply(.SD, as.numeric), .SDcols = perf_cols]
+    
+    # Melt Perf columns to long
+    long <- melt(
+      chunk,
+      id.vars = id_cols,
+      measure.vars = perf_cols,
+      variable.name = "perf_col",
+      value.name = "Perf",
+      variable.factor = FALSE
+    )
+
+    long[, player := sub("^Perf_", "", perf_col)]
+    long[, perf_col := NULL]
+
+    # Keep only players that appear at least once in that game
+    long <- merge(long, keep_pairs, by = c("game_id", "player"), all = FALSE)
+
+    fwrite(long, out_file, append = (k > 1))
+
+    rm(chunk, long, mentioned, game_players, keep_pairs)
+    gc()
+    message("Wrote chunk ", k, " / ", n_chunks)
+  }
+
+  out_file
+}
+
+```
+
+```{r}
+out_path <- wide_to_long_perf_keep_players(nba_norm_wide,
+                                           out_file = "nba_long_perf_2.csv",
+                                           games_per_chunk = 5)
+
+nba_long_2 <- fread(out_path)
+
+```
+
+```{r}
+perf_cols <- grep("^Perf_", names(nba_norm_wide), value = TRUE)
+
+# how many perf columns did we intend to melt?
+length(perf_cols)
+
+# how many unique players ended up in nba_long?
+nba_long[, uniqueN(player)]
+```
+
+```{r}
+perf_cols <- grep("^Perf_[a-z]", names(nba_norm_wide), value = TRUE)
+
+missing_players <- setdiff(expected_players, unique(nba_long$player))
+missing_players
+```
+
+```{r}
+library(data.table)
+library(stringr)
+
+# 1) helper: normalize column names (fix weird dashes, commas, spaces)
+normalize_names <- function(x) {
+  x <- str_replace_all(x, "[\u2013\u2014]", "-")     # en/em dashes -> hyphen
+  x <- str_replace_all(x, "[^A-Za-z0-9_\\-]+", "_")  # other junk -> underscore
+  x <- str_replace_all(x, "_+", "_")                # collapse
+  x <- str_replace_all(x, "^_+|_+$", "")            # trim underscores
+  x
+}
+
+# 2) main: convert wide -> long for Perf columns
+to_long_perf_dt <- function(
+  wide,
+  id_cols = c("game_id", "row_id", "qtr", "game_time_min", "game_time_mmss", "player_on_event"),
+  chunk_games = 50,
+  keep_only_games_player_played = TRUE  # TRUE = drop (game,player) where max Perf == 0
+) {
+  dt <- as.data.table(copy(wide))
+
+  # normalize colnames to avoid Shai-like naming issues
+  setnames(dt, names(dt), normalize_names(names(dt)))
+
+  # --- IMPORTANT: pick ONLY true Perf_* columns (exclude Perf_rate_*, NormPerf_*, etc) ---
+  perf_cols <- grep("^Perf_(?!rate_|norm)", names(dt), value = TRUE, perl = TRUE)
+
+  if (length(perf_cols) == 0) stop("No Perf_* columns found in data.")
+
+  # keep only columns we need to reduce memory before chunking
+  keep_cols <- unique(c(id_cols, perf_cols))
+  keep_cols <- keep_cols[keep_cols %in% names(dt)]
+  dt <- dt[, ..keep_cols]
+
+  # chunk by game_id for memory safety
+  game_ids <- unique(dt$game_id)
+  game_groups <- split(game_ids, ceiling(seq_along(game_ids) / chunk_games))
+
+  out_list <- vector("list", length(game_groups))
+
+  for (i in seq_along(game_groups)) {
+    gids <- game_groups[[i]]
+    chunk <- dt[game_id %in% gids]
+
+    # coerce Perf columns to numeric BEFORE melt to avoid type warning & drop issues
+    chunk[, (perf_cols) := lapply(.SD, as.numeric), .SDcols = perf_cols]
+
+    # melt to long
+    long <- melt(
+      chunk,
+      id.vars = id_cols[id_cols %in% names(chunk)],
+      measure.vars = perf_cols,
+      variable.name = "perf_col",
+      value.name = "Perf",
+      variable.factor = FALSE
+    )
+
+    # extract player id from column name
+    long[, player := sub("^Perf_", "", perf_col)]
+    long[, perf_col := NULL]
+
+    # OPTIONAL: keep only (game, player) pairs where the player actually played
+    # This does NOT drop early zeros; it only drops players who are 0 for the entire game.
+    if (keep_only_games_player_played) {
+      long <- long[
+        , if (max(Perf, na.rm = TRUE) > 0) .SD else NULL,
+        by = .(game_id, player)
+      ]
+    }
+
+    out_list[[i]] <- long
+    message("Finished chunk ", i, " / ", length(game_groups))
+  }
+
+  rbindlist(out_list, use.names = TRUE, fill = TRUE)
+}
+
+```
+
+```{r}
+nba_long_2 <- to_long_perf_dt(
+  wide = nba_norm_wide,
+  chunk_games = 30,                    # adjust smaller if memory tight
+  keep_only_games_player_played = TRUE # recommended
+)
+```
+
+```{r}
+View(nba_long_2)
+```
+
+```{r}
+readr::write_csv(nba_long_2, "nba_1S_long.csv")
+```
+
+```{r}
+nba_long_3 <- to_long_perf_dt(
+  wide = out_full_1S_100P_perf, #change
+  chunk_games = 30,                    # adjust smaller if memory tight
+  keep_only_games_player_played = TRUE # recommended
+)
+```
+
+```{r}
+View(nba_long_3)
+```
+
+```{r}
+readr::write_csv(nba_long_3, "nba_1S_100P_long.csv")
+```
+
+```{r}
+nba_long_3 <- to_long_perf_dt(
+  wide = out_full_1S_100P_perf, #change
+  chunk_games = 30,                    # adjust smaller if memory tight
+  keep_only_games_player_played = TRUE # recommended
+)
+```
+
+```{r}
+library(dplyr)
+library(stringr)
+
+add_on_off_and_minutes <- function(long_df, subs_df) {
+
+  # keep only regulation (remove OT)
+  long_df <- long_df %>% filter(game_time_min <= 48)
+  subs_df <- subs_df %>% filter(!is.na(game_time_min), game_time_min <= 48)
+
+  # make substitution toggles: player + time + delta (+1 in, -1 out)
+  toggles <- bind_rows(
+    subs_df %>%
+      filter(!is.na(sub_in)) %>%
+      transmute(game_id, game_time_min, player = sub_in, delta =  1L),
+    subs_df %>%
+      filter(!is.na(sub_out)) %>%
+      transmute(game_id, game_time_min, player = sub_out, delta = -1L)
+  ) %>%
+    group_by(game_id, player, game_time_min) %>%
+    summarise(delta = sum(delta), .groups = "drop")
+
+  # mark whether the player is explicitly mentioned in the play (helps starters)
+  long_df <- long_df %>%
+    mutate(
+      mentioned = if_else(
+        !is.na(player_on_event) & str_detect(player_on_event, fixed(player)),
+        1L, 0L
+      )
+    )
+
+  # attach toggles to each (game, player, time) row; default delta = 0
+  long_df2 <- long_df %>%
+    left_join(toggles, by = c("game_id", "player", "game_time_min")) %>%
+    mutate(delta = if_else(is.na(delta), 0L, delta))
+
+  # starter heuristic:
+  # if a player is subbed OUT before ever being subbed IN, assume they started (on at 0)
+  first_toggle <- toggles %>%
+    group_by(game_id, player) %>%
+    summarise(
+      first_time = min(game_time_min),
+      first_delta = delta[which.min(game_time_min)],
+      .groups = "drop"
+    )
+
+  long_df2 <- long_df2 %>%
+    left_join(first_toggle, by = c("game_id", "player")) %>%
+    group_by(game_id, player) %>%
+    arrange(game_time_min, row_id, .by_group = TRUE) %>%
+    mutate(
+      start_on = if_else(!is.na(first_delta) & first_delta < 0, 1L, 0L),
+
+      # build state score:
+      # start_on establishes baseline,
+      # cumulative delta applies subs,
+      # mentioned forces ON when we literally see them in the play text.
+      state_score = start_on + cumsum(delta),
+
+      on_court = if_else(state_score > 0 | mentioned == 1L, 1L, 0L),
+
+      # minutes accumulator uses next timestamp, capped at 48
+      next_t = dplyr::lead(game_time_min, default = 48),
+      dt = pmax(next_t - game_time_min, 0),
+
+      minutes_played = sum(dt * on_court, na.rm = TRUE)
+    ) %>%
+    ungroup() %>%
+    select(-delta, -first_time, -first_delta, -start_on, -state_score, -next_t, -dt, -mentioned)
+
+  long_df2
+}
+
+```
+
+```{r}
+nba_long <- add_on_off_and_minutes(
+  long_df = nba_long,
+  subs_df = subs_all   # bind_rows of subs_df across games
+)
+```

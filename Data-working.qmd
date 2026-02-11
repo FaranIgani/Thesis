@@ -1,0 +1,2078 @@
+---
+title: "Data Sample"
+author: "Faran Igani"
+format: 
+  html:
+    code-fold: true
+    code-line-numbers: true
+    code-tools: true
+    embed-resources: true
+editor: source
+---
+
+## Data
+
+```{r}
+install.packages("hoopR")
+```
+
+```{r}
+nba_pbp_2025 <- hoopR::load_nba_pbp(season = 2025)
+nba_pbp_2025
+```
+
+```{r}
+library(hoopR)
+library(tidyr)
+library(stringr)
+library(purrr)
+library(dplyr)
+
+```
+
+```{r}
+game <- nba_pbp_2025[1:516, ]
+game
+```
+
+One player one game
+
+```{r}
+library(dplyr)
+library(stringr)
+library(tidyr)
+
+target_player <- "Shai Gilgeous-Alexander"
+
+game <- nba_pbp_2025 %>% slice(1:516) %>% mutate(row_id = row_number())
+
+# normalize text and get roles (actor, shooter, assister, blocker, stealer)
+game_parsed <- game %>%
+  mutate(
+    text_clean = text %>%
+      str_replace_all("[\u2013\u2014]", "-") %>%  # normalize dashes
+      str_replace_all("\\s+'s", "'s") %>%        # tidy possessives
+      str_squish(),
+    lower = tolower(text_clean),
+
+    # primary actor: from start up to first verb
+    actor = str_trim(str_extract(
+      text_clean,
+      "^[^()]*?(?=\\b(makes|misses|blocks|defensive rebound|offensive rebound|personal foul|shooting foul|turnover|steal|block|assist|jumpball|gains possession)\\b)"
+    )),
+
+    # block victim (shooter on a block play): "... blocks NAME ..."
+    block_victim = str_match(text_clean, "blocks\\s+([^()]+?)(?:'s|\\s|$)")[,2],
+
+    # "(blocked by NAME)" 
+    blocked_by = str_match(text_clean, "\\(blocked by ([^()]+)\\)")[,2],
+
+    # assister inside parentheses
+    assister = str_match(text_clean, "\\(([^()]+) assists\\)")[,2],
+
+    # stealer: either explicit "steal" row (actor) or "(NAME steals)" 
+    steals_paren = str_match(text_clean, "\\(([^()]+) steals\\)")[,2],
+
+    # flags for shots
+    is_ft  = str_detect(lower, "free throw"),
+    is_fg_phrase = str_detect(lower, "jump|layup|dunk|hook|fade|step back|pullup|bank|tip") & !is_ft,
+    made   = str_detect(lower, "\\bmakes\\b"),
+    missed = str_detect(lower, "\\bmisses\\b"),
+    is_fg  = is_fg_phrase & (made | missed),
+
+    # shooter logic:
+    # - normal shot rows: actor is the shooter
+    # - block rows: the victim is the shooter
+    shooter_name = case_when(
+      is_fg & !is.na(actor) ~ actor,
+      str_detect(lower, "blocks") & !is.na(block_victim) ~ block_victim,
+      is_ft & !is.na(actor) ~ actor,
+      TRUE ~ NA_character_
+    ),
+
+    # blocker and stealer names
+    blocker_name = case_when(
+      str_detect(lower, "blocks") ~ actor,
+      !is.na(blocked_by) ~ blocked_by,
+      TRUE ~ NA_character_
+    ),
+    stealer_name = case_when(
+      str_detect(lower, "steal") ~ actor,
+      !is.na(steals_paren) ~ steals_paren,
+      TRUE ~ NA_character_
+    ),
+
+    # rebounds & other typed events
+    is_orb = str_detect(type_text, regex("^Offensive Rebound$", ignore_case = TRUE)),
+    is_drb = str_detect(type_text, regex("^Defensive Rebound$", ignore_case = TRUE)),
+    is_pf  = str_detect(type_text, regex("Foul", ignore_case = TRUE)),
+    is_tov = str_detect(type_text, regex("Turnover", ignore_case = TRUE)),
+
+    # made shot point value from text 
+    is_three = str_detect(lower, "three point|3[- ]?pt|3pt"),
+    pts_on_make = case_when(
+      is_ft & made ~ 1L,
+      is_fg & made & is_three ~ 3L,
+      is_fg & made ~ 2L,
+      TRUE ~ 0L
+    )
+  )
+
+# event-level increments for the target player 
+events_for_target <- game_parsed %>%
+  mutate(
+    target_is_shooter = !is.na(shooter_name) & shooter_name == target_player,
+    target_is_assister = !is.na(assister) & assister == target_player,
+    target_is_blocker  = !is.na(blocker_name) & blocker_name == target_player,
+    target_is_stealer  = !is.na(stealer_name) & stealer_name == target_player,
+    target_is_actor    = !is.na(actor) & actor == target_player,
+
+    # shots
+    FGA_evt = as.integer(target_is_shooter & is_fg),
+    FG_evt  = as.integer(target_is_shooter & is_fg & made),
+    FTA_evt = as.integer(target_is_shooter & is_ft),
+    FT_evt  = as.integer(target_is_shooter & is_ft & made),
+    PTS_evt = if_else(target_is_shooter, pts_on_make, 0L),
+
+    # rebounds
+    ORB_evt = as.integer(target_is_actor & is_orb),
+    DRB_evt = as.integer(target_is_actor & is_drb),
+
+    # assists 
+    AST_evt = as.integer(target_is_assister & is_fg & made),
+    #defense
+    BLK_evt = as.integer(target_is_blocker),
+    STL_evt = as.integer(target_is_stealer),
+
+    # fouls & turnovers 
+    PF_evt  = as.integer(target_is_actor & is_pf),
+    TOV_evt = as.integer(target_is_actor & is_tov)
+  )
+
+out <- events_for_target %>%
+  arrange(row_id) %>%
+  mutate(
+    PTS = cumsum(PTS_evt),
+    FG  = cumsum(FG_evt),
+    FGA = cumsum(FGA_evt),
+    FT  = cumsum(FT_evt),
+    FTA = cumsum(FTA_evt),
+    ORB = cumsum(ORB_evt),
+    DRB = cumsum(DRB_evt),
+    STL = cumsum(STL_evt),
+    AST = cumsum(AST_evt),
+    BLK = cumsum(BLK_evt),
+    PF  = cumsum(PF_evt),
+    TOV = cumsum(TOV_evt),
+
+    # performance metric 
+    Perf = PTS + 0.4*FG - 0.7*FGA - 0.4*(FTA - FT) +
+           0.7*ORB + 0.3*DRB + STL + 0.7*AST + 0.6*BLK - 0.4*PF - TOV,
+
+    dPerf = Perf - dplyr::lag(Perf, default = 0)
+  ) %>%
+  select(row_id, text, type_text, home_score, away_score,
+         PTS_evt, FG_evt, FGA_evt, FT_evt, FTA_evt, ORB_evt, DRB_evt,
+         STL_evt, AST_evt, BLK_evt, PF_evt, TOV_evt,
+         PTS, FG, FGA, FT, FTA, ORB, DRB, STL, AST, BLK, PF, TOV, Perf, dPerf)
+
+# View(out)  
+```
+
+```{r}
+View(out)
+```
+
+```{r}
+
+```
+
+Multiple players one game
+
+```{r}
+game <- nba_pbp_2025 %>% 
+  slice(1:516) %>% 
+  mutate(row_id = row_number())
+
+# Parse through game
+game_parsed <- game %>%
+  mutate(
+    text_clean = text %>%
+      str_replace_all("[\u2013\u2014]", "-") %>%  # normalize long dashes
+      str_replace_all("\\s+'s", "'s") %>%
+      str_squish(),
+    lower = tolower(text_clean),
+
+    actor = str_trim(str_extract(
+      text_clean,
+      "^[^()]*?(?=\\b(makes|misses|blocks|defensive rebound|offensive rebound|personal foul|shooting foul|turnover|steal|block|assist|jumpball|gains possession)\\b)"
+    )),
+
+    # roles and events
+    block_victim = str_match(text_clean, "blocks\\s+([^()]+?)(?:'s|\\s|$)")[,2],
+    blocked_by   = str_match(text_clean, "\\(blocked by ([^()]+)\\)")[,2],
+    assister     = str_match(text_clean, "\\(([^()]+) assists\\)")[,2],
+    steals_paren = str_match(text_clean, "\\(([^()]+) steals\\)")[,2],
+
+    is_ft  = str_detect(lower, "free throw"),
+    is_fg_phrase = str_detect(lower, "jump|layup|dunk|hook|fade|step back|pullup|bank|tip") & !is_ft,
+    made   = str_detect(lower, "\\bmakes\\b"),
+    missed = str_detect(lower, "\\bmisses\\b"),
+    is_fg  = is_fg_phrase & (made | missed),
+
+    shooter_name = case_when(
+      is_fg & !is.na(actor) ~ actor,
+      str_detect(lower, "blocks") & !is.na(block_victim) ~ block_victim,
+      is_ft & !is.na(actor) ~ actor,
+      TRUE ~ NA_character_
+    ),
+    blocker_name = case_when(
+      str_detect(lower, "blocks") ~ actor,
+      !is.na(blocked_by) ~ blocked_by,
+      TRUE ~ NA_character_
+    ),
+    stealer_name = case_when(
+      str_detect(lower, "steal") ~ actor,
+      !is.na(steals_paren) ~ steals_paren,
+      TRUE ~ NA_character_
+    ),
+
+    is_orb = str_detect(type_text, regex("^Offensive Rebound$", ignore_case = TRUE)),
+    is_drb = str_detect(type_text, regex("^Defensive Rebound$", ignore_case = TRUE)),
+    is_pf  = str_detect(type_text, regex("Foul", ignore_case = TRUE)),
+    is_tov = str_detect(type_text, regex("Turnover", ignore_case = TRUE)),
+
+    is_three = str_detect(lower, "three point|3[- ]?pt|3pt"),
+    pts_on_make = case_when(
+      is_ft & made ~ 1L,
+      is_fg & made & is_three ~ 3L,
+      is_fg & made ~ 2L,
+      TRUE ~ 0L
+    )
+  ) %>%
+  select(row_id, text, type_text, home_score, away_score,
+         actor, shooter_name, assister, blocker_name, stealer_name,
+         is_fg, is_ft, made, is_orb, is_drb, is_pf, is_tov, pts_on_make)
+
+
+# compute one player's Perf metric
+compute_player_perf <- function(parsed, player_name) {
+  parsed %>%
+    mutate(
+      is_shooter  = !is.na(shooter_name) & shooter_name  == player_name,
+      is_actor    = !is.na(actor)        & actor         == player_name,
+      is_assister = !is.na(assister)     & assister      == player_name,
+      is_blocker  = !is.na(blocker_name) & blocker_name  == player_name,
+      is_stealer  = !is.na(stealer_name) & stealer_name  == player_name,
+
+      # event-level increments (0 when not involved)
+      FGA_evt = as.integer(is_shooter & is_fg),
+      FG_evt  = as.integer(is_shooter & is_fg & made),
+      FTA_evt = as.integer(is_shooter & is_ft),
+      FT_evt  = as.integer(is_shooter & is_ft & made),
+      PTS_evt = if_else(is_shooter, pts_on_make, 0L),
+
+      ORB_evt = as.integer(is_actor   & is_orb),
+      DRB_evt = as.integer(is_actor   & is_drb),
+      AST_evt = as.integer(is_assister & is_fg & made),
+      BLK_evt = as.integer(is_blocker),
+      STL_evt = as.integer(is_stealer),
+      PF_evt  = as.integer(is_actor   & is_pf),
+      TOV_evt = as.integer(is_actor   & is_tov)
+    ) %>%
+    arrange(row_id) %>%
+    mutate(
+      
+      PTS = cumsum(PTS_evt),
+      FG  = cumsum(FG_evt),
+      FGA = cumsum(FGA_evt),
+      FT  = cumsum(FT_evt),
+      FTA = cumsum(FTA_evt),
+      ORB = cumsum(ORB_evt),
+      DRB = cumsum(DRB_evt),
+      STL = cumsum(STL_evt),
+      AST = cumsum(AST_evt),
+      BLK = cumsum(BLK_evt),
+      PF  = cumsum(PF_evt),
+      TOV = cumsum(TOV_evt),
+      #compute performance 
+      Perf = PTS + 0.4*FG - 0.7*FGA - 0.4*(FTA - FT) +
+             0.7*ORB + 0.3*DRB + STL + 0.7*AST + 0.6*BLK - 0.4*PF - TOV,
+      dPerf = Perf - dplyr::lag(Perf, default = 0)
+    ) %>%
+    transmute(row_id, Perf, dPerf)
+}
+
+# Column-name sanitizer (turn player name into safe suffix)
+clean_suffix <- function(x) {
+  x %>%
+    str_replace_all("[^A-Za-z0-9]+", "_") %>%
+    str_replace_all("^_+|_+$", "") %>%
+    tolower()
+}
+
+
+players<- c(
+  "Shai Gilgeous-Alexander",
+  "Andrew Nembhard",
+  "Aaron Nesmith",
+  "Chet Holmgren",
+  "Pascal Siakam",
+  "Bennedict Mathurin"
+)
+
+
+
+# Compute per-player and merge
+
+out_all <- game %>% select(row_id, text, type_text, home_score, away_score)
+
+for (p in players) {
+  res <- compute_player_perf(game_parsed, p)
+  suf <- clean_suffix(p)
+  res <- res %>%
+    rename(!!paste0("Perf_", suf) := Perf,
+           !!paste0("dPerf_", suf) := dPerf)
+  out_all <- out_all %>% left_join(res, by = "row_id")
+}
+
+# head(out_all)
+```
+
+```{r}
+View(out_all)
+```
+
+Multiple players all season
+
+```{r}
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(purrr)
+
+players <- c(
+  "Shai Gilgeous-Alexander",
+  "Andrew Nembhard",
+  "Aaron Nesmith",
+  "Chet Holmgren",
+  "Pascal Siakam",
+  "Bennedict Mathurin"
+)
+
+# make safe column names
+clean_suffix <- function(x) {
+  x %>%
+    str_replace_all("[^A-Za-z0-9]+", "_") %>%
+    str_replace_all("^_+|_+$", "") %>%
+    tolower()
+}
+
+# Parse one game's PBP (row_id resets within each game)
+parse_one_game <- function(game_df) {
+  game_df %>%
+    mutate(
+      row_id = row_number(),
+      text_clean = text %>%
+        str_replace_all("[\u2013\u2014]", "-") %>%
+        str_replace_all("\\s+'s", "'s") %>%
+        str_squish(),
+      lower = tolower(text_clean),
+
+      actor = str_trim(str_extract(
+        text_clean,
+        "^[^()]*?(?=\\b(makes|misses|blocks|defensive rebound|offensive rebound|personal foul|shooting foul|turnover|steal|block|assist|jumpball|gains possession)\\b)"
+      )),
+
+      block_victim = str_match(text_clean, "blocks\\s+([^()]+?)(?:'s|\\s|$)")[,2],
+      blocked_by   = str_match(text_clean, "\\(blocked by ([^()]+)\\)")[,2],
+      assister     = str_match(text_clean, "\\(([^()]+) assists\\)")[,2],
+      steals_paren = str_match(text_clean, "\\(([^()]+) steals\\)")[,2],
+
+      is_ft  = str_detect(lower, "free throw"),
+      is_fg_phrase = str_detect(lower, "jump|layup|dunk|hook|fade|step back|pullup|bank|tip") & !is_ft,
+      made   = str_detect(lower, "\\bmakes\\b"),
+      missed = str_detect(lower, "\\bmisses\\b"),
+      is_fg  = is_fg_phrase & (made | missed),
+
+      shooter_name = case_when(
+        is_fg & !is.na(actor) ~ actor,
+        str_detect(lower, "blocks") & !is.na(block_victim) ~ block_victim,
+        is_ft & !is.na(actor) ~ actor,
+        TRUE ~ NA_character_
+      ),
+      blocker_name = case_when(
+        str_detect(lower, "blocks") ~ actor,
+        !is.na(blocked_by) ~ blocked_by,
+        TRUE ~ NA_character_
+      ),
+      stealer_name = case_when(
+        str_detect(lower, "steal") ~ actor,
+        !is.na(steals_paren) ~ steals_paren,
+        TRUE ~ NA_character_
+      ),
+
+      is_orb = str_detect(type_text, regex("^Offensive Rebound$", ignore_case = TRUE)),
+      is_drb = str_detect(type_text, regex("^Defensive Rebound$", ignore_case = TRUE)),
+      is_pf  = str_detect(type_text, regex("Foul", ignore_case = TRUE)),
+      is_tov = str_detect(type_text, regex("Turnover", ignore_case = TRUE)),
+
+      is_three = str_detect(lower, "three point|3[- ]?pt|3pt"),
+      pts_on_make = case_when(
+        is_ft & made ~ 1L,
+        is_fg & made & is_three ~ 3L,
+        is_fg & made ~ 2L,
+        TRUE ~ 0L
+      )
+    ) %>%
+    select(
+      game_id, row_id,
+      any_of("clock_display_value"),
+      text, type_text, home_score, away_score,
+      actor, shooter_name, assister, blocker_name, stealer_name,
+      is_fg, is_ft, made, is_orb, is_drb, is_pf, is_tov, pts_on_make
+    )
+}
+
+# Compute one player's Perf/dPerf (resets per game)
+compute_player_perf <- function(parsed, player_name) {
+  parsed %>%
+    mutate(
+      is_shooter  = !is.na(shooter_name) & shooter_name  == player_name,
+      is_actor    = !is.na(actor)        & actor         == player_name,
+      is_assister = !is.na(assister)     & assister      == player_name,
+      is_blocker  = !is.na(blocker_name) & blocker_name  == player_name,
+      is_stealer  = !is.na(stealer_name) & stealer_name  == player_name,
+
+      FGA_evt = as.integer(is_shooter & is_fg),
+      FG_evt  = as.integer(is_shooter & is_fg & made),
+      FTA_evt = as.integer(is_shooter & is_ft),
+      FT_evt  = as.integer(is_shooter & is_ft & made),
+      PTS_evt = if_else(is_shooter, pts_on_make, 0L),
+
+      ORB_evt = as.integer(is_actor   & is_orb),
+      DRB_evt = as.integer(is_actor   & is_drb),
+      AST_evt = as.integer(is_assister & is_fg & made),
+      BLK_evt = as.integer(is_blocker),
+      STL_evt = as.integer(is_stealer),
+      PF_evt  = as.integer(is_actor   & is_pf),
+      TOV_evt = as.integer(is_actor   & is_tov)
+    ) %>%
+    arrange(row_id) %>%
+    mutate(
+      # reset within game
+      PTS = cumsum(PTS_evt),
+      FG  = cumsum(FG_evt),
+      FGA = cumsum(FGA_evt),
+      FT  = cumsum(FT_evt),
+      FTA = cumsum(FTA_evt),
+      ORB = cumsum(ORB_evt),
+      DRB = cumsum(DRB_evt),
+      STL = cumsum(STL_evt),
+      AST = cumsum(AST_evt),
+      BLK = cumsum(BLK_evt),
+      PF  = cumsum(PF_evt),
+      TOV = cumsum(TOV_evt),
+
+      Perf = PTS + 0.4*FG - 0.7*FGA - 0.4*(FTA - FT) +
+             0.7*ORB + 0.3*DRB + STL + 0.7*AST + 0.6*BLK - 0.4*PF - TOV,
+      dPerf = Perf - dplyr::lag(Perf, default = 0)
+    ) %>%
+    transmute(game_id, row_id, Perf, dPerf)
+}
+
+# build table
+process_one_game <- function(game_df, players) {
+  parsed <- parse_one_game(game_df)
+
+  base <- parsed %>%
+    select(game_id, row_id, any_of("clock_display_value"), home_score, away_score) %>%
+    distinct()
+
+  wide <- base
+  for (p in players) {
+    res <- compute_player_perf(parsed, p)
+    suf <- clean_suffix(p)
+    res <- res %>%
+      rename(!!paste0("Perf_",  suf) := Perf,
+             !!paste0("dPerf_", suf) := dPerf)
+    wide <- wide %>% left_join(res, by = c("game_id", "row_id"))
+  }
+  wide
+}
+
+#Apply to the full 2025 season
+
+season_wide <- nba_pbp_2025 %>%
+  group_by(game_id) %>%
+  group_split() %>%
+  map_df(~ process_one_game(.x, players))
+
+```
+
+```{r}
+View(season_wide)
+```
+
+```{r}
+readr::write_csv(season_wide, "one_season_thunder.csv")
+```
+
+V2 working, players with 30+ minutes. With player on each event, time left in game, game ID
+
+```{r}
+#season with player on event
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(purrr)
+
+# manual list of players, may work better
+players <- c(
+  "Shai Gilgeous-Alexander","Tyrese Maxey","Josh Hart","Devin Booker","Mikal Bridges","Nikola Jokic","OG Anunoby","Kevin Durant","Jayson Tatum","Anthony Edwards","De'Aaron Fox","Jamal Murray","Damian Lillard","Kyrie Irving","Trae Young","DeMar DeRozan","Jalen Johnson","Jalen Brunson","Tyler Herro","Luka Doncic","James Harden","Fred VanVleet","Zach LaVine","Cade Cunningham","Trey Murphy III","Karl-Anthony Towns","Austin Reaves", "LeBron James","Domantas Sabonis","Kelly Oubre Jr.","Paolo Banchero","Bam Adebayo","Jaylen Brown","Giannis Antetokounmpo","Derrick White","Tyrese Haliburton","Anthony Davis","	Victor Wembanyama"
+ 
+)
+
+options(scipen = 999)
+
+# Safe column suffix
+clean_suffix <- function(x) {
+  x %>%
+    str_replace_all("[^A-Za-z0-9]+", "_") %>%
+    str_replace_all("^_+|_+$", "") %>%
+    tolower()
+}
+
+# Parse through one game
+parse_one_game <- function(game_df) {
+  tov_triggers <- paste(
+    "turnover", "bad pass", "out of bounds", "lost ball",
+    "travel", "traveling", "double dribble", "carrying", "palming",
+    "backcourt", "8-second", "8 second", "5-second", "5 second",
+    "3-second", "3 second", "shot clock", "offensive goaltend", "offensive goaltending",
+    sep="|"
+  )
+  #had to add more tov triggers
+  
+  game_df %>%
+    mutate(
+      row_id = row_number(),
+      text_clean = text %>%
+        str_replace_all("[\u2013\u2014]", "-") %>%  # normalize long dashes
+        str_replace_all("\\s+'s", "'s") %>%
+        str_squish(),
+      lower = tolower(text_clean),
+
+      actor = str_trim(str_extract(
+        text_clean,
+        paste0(
+          "^[^()]*?(?=\\b(",
+          paste(
+            c(
+              "makes","misses","blocks","defensive rebound","offensive rebound",
+              "personal foul","shooting foul","turnover","steal","block","assist",
+              "jumpball","gains possession",
+              # NEW: catch rows like "out of bounds bad pass"
+              "bad pass","out of bounds","lost ball","travel","traveling",
+              "double dribble","carrying","palming","backcourt","shot clock",
+              "3-second","5-second","8-second","offensive goaltend","offensive goaltending"
+            ),
+            collapse="|"
+          ),
+          ")\\b)"
+        )
+      )),
+
+      # roles & helpers
+      block_victim = str_match(text_clean, "blocks\\s+([^()]+?)(?:'s|\\s|$)")[,2],
+      blocked_by   = str_match(text_clean, "\\(blocked by ([^()]+)\\)")[,2],
+      assister     = str_match(text_clean, "\\(([^()]+) assists\\)")[,2],
+      steals_paren = str_match(text_clean, "\\(([^()]+) steals\\)")[,2],
+
+      is_ft  = str_detect(lower, "free throw"),
+      is_fg_phrase = str_detect(lower, "jump|layup|dunk|hook|fade|step back|pullup|bank|tip") & !is_ft,
+      made   = str_detect(lower, "\\bmakes\\b"),
+      missed = str_detect(lower, "\\bmisses\\b"),
+      is_fg  = is_fg_phrase & (made | missed),
+
+      shooter_name = case_when(
+        is_fg & !is.na(actor) ~ actor,
+        str_detect(lower, "blocks") & !is.na(block_victim) ~ block_victim,
+        is_ft & !is.na(actor) ~ actor,
+        TRUE ~ NA_character_
+      ),
+      blocker_name = case_when(
+        str_detect(lower, "blocks") ~ actor,
+        !is.na(blocked_by) ~ blocked_by,
+        TRUE ~ NA_character_
+      ),
+      stealer_name = case_when(
+        str_detect(lower, "steal") ~ actor,
+        !is.na(steals_paren) ~ steals_paren,
+        TRUE ~ NA_character_
+      ),
+
+      is_orb = str_detect(type_text, regex("^Offensive Rebound$", ignore_case = TRUE)),
+      is_drb = str_detect(type_text, regex("^Defensive Rebound$", ignore_case = TRUE)),
+      is_pf  = str_detect(type_text, regex("Foul", ignore_case = TRUE)),
+      is_tov_typetext = str_detect(type_text, regex("Turnover", ignore_case = TRUE)),
+      is_tov_text     = str_detect(lower, tov_triggers),
+      is_tov = is_tov_typetext | is_tov_text,
+
+      is_three = str_detect(lower, "three point|3[- ]?pt|3pt"),
+      pts_on_make = case_when(
+        is_ft & made ~ 1L,
+        is_fg & made & is_three ~ 3L,
+        is_fg & made ~ 2L,
+        TRUE ~ 0L
+      )
+    ) %>%
+    rowwise() %>%
+    mutate(
+      player_on_event = {
+        parts <- c(actor, shooter_name, assister, blocker_name, stealer_name, block_victim)
+        parts <- unique(na.omit(parts[parts != ""]))
+        if (length(parts) == 0) NA_character_ else paste(parts, collapse = "; ")
+      }
+    ) %>%
+    ungroup() %>%
+    select(
+      game_id, row_id,
+      any_of("clock_display_value"),
+      text, type_text, home_score, away_score,
+      actor, shooter_name, assister, blocker_name, stealer_name,
+      is_fg, is_ft, made, is_orb, is_drb, is_pf, is_tov, pts_on_make,
+      player_on_event
+    )
+}
+
+# Compute one player's Perf/dPerf for ONE game (resets here)
+compute_player_perf <- function(parsed, player_name) {
+  parsed %>%
+    mutate(
+      is_shooter  = !is.na(shooter_name) & shooter_name  == player_name,
+      is_actor    = !is.na(actor)        & actor         == player_name,
+      is_assister = !is.na(assister)     & assister      == player_name,
+      is_blocker  = !is.na(blocker_name) & blocker_name  == player_name,
+      is_stealer  = !is.na(stealer_name) & stealer_name  == player_name,
+
+      FGA_evt = as.integer(is_shooter & is_fg),
+      FG_evt  = as.integer(is_shooter & is_fg & made),
+      FTA_evt = as.integer(is_shooter & is_ft),
+      FT_evt  = as.integer(is_shooter & is_ft & made),
+      PTS_evt = if_else(is_shooter, pts_on_make, 0L),
+
+      ORB_evt = as.integer(is_actor   & is_orb),
+      DRB_evt = as.integer(is_actor   & is_drb),
+      AST_evt = as.integer(is_assister & is_fg & made),
+      BLK_evt = as.integer(is_blocker),
+      STL_evt = as.integer(is_stealer),
+      PF_evt  = as.integer(is_actor   & is_pf),
+      TOV_evt = as.integer(is_actor   & is_tov)
+    ) %>%
+    arrange(row_id) %>%
+    mutate(
+      PTS = cumsum(PTS_evt),
+      FG  = cumsum(FG_evt),
+      FGA = cumsum(FGA_evt),
+      FT  = cumsum(FT_evt),
+      FTA = cumsum(FTA_evt),
+      ORB = cumsum(ORB_evt),
+      DRB = cumsum(DRB_evt),
+      STL = cumsum(STL_evt),
+      AST = cumsum(AST_evt),
+      BLK = cumsum(BLK_evt),
+      PF  = cumsum(PF_evt),
+      TOV = cumsum(TOV_evt),
+
+      Perf = PTS + 0.4*FG - 0.7*FGA - 0.4*(FTA - FT) +
+             0.7*ORB + 0.3*DRB + STL + 0.7*AST + 0.6*BLK - 0.4*PF - TOV,
+      dPerf = Perf - dplyr::lag(Perf, default = 0)
+    ) %>%
+    transmute(game_id, row_id, Perf, dPerf)
+}
+
+# Build table 
+process_one_game <- function(game_df, players) {
+  parsed <- parse_one_game(game_df)
+
+  base <- parsed %>%
+    select(game_id, row_id,
+           any_of("clock_display_value"),
+           player_on_event) %>%
+    distinct()
+
+  wide <- base
+  for (p in players) {
+    res <- compute_player_perf(parsed, p)
+    suf <- clean_suffix(p)
+    res <- res %>%
+      rename(!!paste0("Perf_",  suf) := Perf,
+             !!paste0("dPerf_", suf) := dPerf)
+    wide <- wide %>% left_join(res, by = c("game_id", "row_id"))
+  }
+  wide
+}
+
+# run on all nba_pbp_2025 
+
+season_wide <- nba_pbp_2025 %>%
+  group_by(game_id) %>%
+  group_split() %>%
+  map_df(~ process_one_game(.x, players))
+
+```
+
+```{r}
+View(season_wide)
+```
+
+20 seasons
+
+```{r}
+#season 2002-2025
+nba_pbp <- hoopR::load_nba_pbp(season = 2005:2025)
+nba_pbp
+```
+
+```{r}
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(purrr)
+
+# manual list of players, may work better
+players <- c(
+  "Shai Gilgeous-Alexander","Tyrese Maxey","Josh Hart","Devin Booker","Mikal Bridges",
+  "Nikola Jokic","OG Anunoby","Kevin Durant","Jayson Tatum","Anthony Edwards",
+  "De'Aaron Fox","Jamal Murray","Damian Lillard","Kyrie Irving","Trae Young",
+  "DeMar DeRozan","Jalen Johnson","Jalen Brunson","Tyler Herro","Luka Doncic",
+  "James Harden","Fred VanVleet","Zach LaVine","Cade Cunningham","Trey Murphy III",
+  "Karl-Anthony Towns","Austin Reaves","LeBron James","Domantas Sabonis",
+  "Kelly Oubre Jr.","Paolo Banchero","Bam Adebayo","Jaylen Brown",
+  "Giannis Antetokounmpo","Derrick White","Tyrese Haliburton","Anthony Davis",
+  "Victor Wembanyama",
+  # 2020-2025
+  "Keegan Murray","Brandon Miller","Christian Braun","Dyson Daniels","Franz Wagner",
+  "Michael Porter Jr.","Rudy Gobert","Coby White","Brandon Ingram","Bilal Coulibaly",
+  "Jalen Green","Scottie Barnes","Miles Bridges","Dejounte Murray","Julius Randle",
+  "Ja Morant","Donovan Mitchell","Anfernee Simons","Desmond Bane","Nikola Vucevic",
+  "Kawhi Leonard","Jimmy Butler","Jerami Grant","Tobias Harris","Paul George",
+  "Joel Embiid","Grayson Allen","Terry Rozier","Jacob Gilyard","Pascal Siakam",
+  "Darius Garland","CJ McCollum","LaMelo Ball","RaiQuan Gray","Kyle Kuzma",
+  "Stephen Curry","Spencer Dinwiddie","Lauri Markkanen","Evan Mobley",
+  "Kevin Porter Jr.","RJ Barrett",
+  # 2015-2020
+  "Aaron Jackson","Aaron Gordon","Andre Drummond","Andrew Wiggins","Austin Rivers",
+  "Ben Simmons","Blake Griffin","Bojan Bogdanovic","Buddy Hield","Carmelo Anthony",
+  "Cedi Osman","Chris Paul","Clint Capela","Collin Sexton","Deandre Ayton",
+  "DeMarcus Cousins","Devonte' Graham","Draymond Green","Gary Harris",
+  "Gary Trent Jr.","Gordon Hayward","Harrison Barnes","Jeff Teague","John Collins",
+  "John Wall","Kentavious Caldwell-Pope","Khris Middleton","Klay Thompson",
+  "Kyle Lowry","LaMarcus Aldridge","Malik Beasley","Marc Gasol","Marcus Smart",
+  "Melvin Frazier Jr.","Mike Conley","P.J. Tucker","Rajon Rondo","Robert Covington",
+  "Russell Westbrook","Steven Adams","Taj Gibson","Tim Hardaway Jr.","T.J. Warren",
+  "Wesley Matthews","Will Barton","Zion Williamson",
+  # 2010-2015
+  "Al Horford","Al Jefferson","Al Thornton","Andrea Bargnani","Andrew Bogut",
+  "Antawn Jamison","Arron Afflalo","Beno Udrih","Boris Diaw","Bradley Beal",
+  "Brandon Knight","Brandon Roy","Caron Butler","Chris Bosh","Chris Kaman",
+  "Darren Collison","David Lee","David West","DeAndre Jordan","Deron Williams",
+  "Devin Harris","Dirk Nowitzki","Dorell Wright","Dwight Howard","Eric Bledsoe",
+  "Eric Gordon","George Hill","Gerald Henderson","Gerald Wallace","Gilbert Arenas",
+  "Goran Dragic","Greivis Vasquez","Isaiah Thomas","Jamal Crawford","Jason Kidd",
+  "Joe Johnson","JR Smith","Kemba Walker","Kevin Love","Kevin Martin","Kobe Bryant",
+  "Luol Deng","Metta World Peace","Michael Carter-Williams","Monta Ellis",
+  "Nicolas Batum","O.J. Mayo","Paul Millsap","Paul Pierce","Pau Gasol","Ray Allen",
+  "Raymond Felton","Ricky Rubio","Rudy Gay","Stephen Jackson","Thaddeus Young",
+  "Tayshaun Prince","Ty Lawson","Tyreke Evans","Vince Carter",
+  # 2005-2010
+  "Allen Iverson","Al Harrington","Andre Kirilenko","Andre Miller","Baron Davis",
+  "Ben Gordon","Brad Miller","Chauncey Billups","Corey Maggette","Cuttino Mobley",
+  "Hedo Turkoglu","Jason Richardson","Jermaine O'Neal","Josh Childress","Josh Howard",
+  "Kevin Garnett","Kirk Hinrich","Lamar Odom","Larry Hughes","Mehmet Okur",
+  "Michael Redd","Mike Bibby","Mike Dunleavy","Mike James","Mo Williams",
+  "Morris Peterson","Peja Stojakovic","Rafer Alston","Raja Bell","Rashard Lewis",
+  "Richard Hamilton","Richard Jefferson","Ricky Davis","Shane Battier",
+  "Shawn Marion","Stephon Marbury","Tracy McGrady","Udonis Haslem",
+  "Wally Szczerbiak","Yao Ming"
+)
+
+options(scipen = 999)
+
+# Safe column suffix
+clean_suffix <- function(x) {
+  x %>%
+    str_replace_all("[^A-Za-z0-9]+", "_") %>%
+    str_replace_all("^_+|_+$", "") %>%
+    tolower()
+}
+
+# Parse through one game
+parse_one_game <- function(game_df) {
+  tov_triggers <- paste(
+    "turnover", "bad pass", "out of bounds", "lost ball",
+    "travel", "traveling", "double dribble", "carrying", "palming",
+    "backcourt", "8-second", "8 second", "5-second", "5 second",
+    "3-second", "3 second", "shot clock", "offensive goaltend", "offensive goaltending",
+    sep="|"
+  )
+  #had to add more tov triggers
+  
+  game_df %>%
+    mutate(
+      row_id = row_number(),
+      text_clean = text %>%
+        str_replace_all("[\u2013\u2014]", "-") %>%  # normalize long dashes
+        str_replace_all("\\s+'s", "'s") %>%
+        str_squish(),
+      lower = tolower(text_clean),
+
+      actor = str_trim(str_extract(
+        text_clean,
+        paste0(
+          "^[^()]*?(?=\\b(",
+          paste(
+            c(
+              "makes","misses","blocks","defensive rebound","offensive rebound",
+              "personal foul","shooting foul","turnover","steal","block","assist",
+              "jumpball","gains possession",
+              # NEW: catch rows like "out of bounds bad pass"
+              "bad pass","out of bounds","lost ball","travel","traveling",
+              "double dribble","carrying","palming","backcourt","shot clock",
+              "3-second","5-second","8-second","offensive goaltend","offensive goaltending"
+            ),
+            collapse="|"
+          ),
+          ")\\b)"
+        )
+      )),
+
+      # roles & helpers
+      block_victim = str_match(text_clean, "blocks\\s+([^()]+?)(?:'s|\\s|$)")[,2],
+      blocked_by   = str_match(text_clean, "\\(blocked by ([^()]+)\\)")[,2],
+      assister     = str_match(text_clean, "\\(([^()]+) assists\\)")[,2],
+      steals_paren = str_match(text_clean, "\\(([^()]+) steals\\)")[,2],
+
+      is_ft  = str_detect(lower, "free throw"),
+      is_fg_phrase = str_detect(lower, "jump|layup|dunk|hook|fade|step back|pullup|bank|tip") & !is_ft,
+      made   = str_detect(lower, "\\bmakes\\b"),
+      missed = str_detect(lower, "\\bmisses\\b"),
+      is_fg  = is_fg_phrase & (made | missed),
+
+      shooter_name = case_when(
+        is_fg & !is.na(actor) ~ actor,
+        str_detect(lower, "blocks") & !is.na(block_victim) ~ block_victim,
+        is_ft & !is.na(actor) ~ actor,
+        TRUE ~ NA_character_
+      ),
+      blocker_name = case_when(
+        str_detect(lower, "blocks") ~ actor,
+        !is.na(blocked_by) ~ blocked_by,
+        TRUE ~ NA_character_
+      ),
+      stealer_name = case_when(
+        str_detect(lower, "steal") ~ actor,
+        !is.na(steals_paren) ~ steals_paren,
+        TRUE ~ NA_character_
+      ),
+
+      is_orb = str_detect(type_text, regex("^Offensive Rebound$", ignore_case = TRUE)),
+      is_drb = str_detect(type_text, regex("^Defensive Rebound$", ignore_case = TRUE)),
+      is_pf  = str_detect(type_text, regex("Foul", ignore_case = TRUE)),
+      is_tov_typetext = str_detect(type_text, regex("Turnover", ignore_case = TRUE)),
+      is_tov_text     = str_detect(lower, tov_triggers),
+      is_tov = is_tov_typetext | is_tov_text,
+
+      is_three = str_detect(lower, "three point|3[- ]?pt|3pt"),
+      pts_on_make = case_when(
+        is_ft & made ~ 1L,
+        is_fg & made & is_three ~ 3L,
+        is_fg & made ~ 2L,
+        TRUE ~ 0L
+      )
+    ) %>%
+    rowwise() %>%
+    mutate(
+      player_on_event = {
+        parts <- c(actor, shooter_name, assister, blocker_name, stealer_name, block_victim)
+        parts <- unique(na.omit(parts[parts != ""]))
+        if (length(parts) == 0) NA_character_ else paste(parts, collapse = "; ")
+      }
+    ) %>%
+    ungroup() %>%
+    select(
+      game_id, row_id,
+      any_of("clock_display_value"),
+      text, type_text, home_score, away_score,
+      actor, shooter_name, assister, blocker_name, stealer_name,
+      is_fg, is_ft, made, is_orb, is_drb, is_pf, is_tov, pts_on_make,
+      player_on_event
+    )
+}
+
+# Compute one player's Perf/dPerf for ONE game (resets here)
+compute_player_perf <- function(parsed, player_name) {
+  parsed %>%
+    mutate(
+      is_shooter  = !is.na(shooter_name) & shooter_name  == player_name,
+      is_actor    = !is.na(actor)        & actor         == player_name,
+      is_assister = !is.na(assister)     & assister      == player_name,
+      is_blocker  = !is.na(blocker_name) & blocker_name  == player_name,
+      is_stealer  = !is.na(stealer_name) & stealer_name  == player_name,
+
+      FGA_evt = as.integer(is_shooter & is_fg),
+      FG_evt  = as.integer(is_shooter & is_fg & made),
+      FTA_evt = as.integer(is_shooter & is_ft),
+      FT_evt  = as.integer(is_shooter & is_ft & made),
+      PTS_evt = if_else(is_shooter, pts_on_make, 0L),
+
+      ORB_evt = as.integer(is_actor   & is_orb),
+      DRB_evt = as.integer(is_actor   & is_drb),
+      AST_evt = as.integer(is_assister & is_fg & made),
+      BLK_evt = as.integer(is_blocker),
+      STL_evt = as.integer(is_stealer),
+      PF_evt  = as.integer(is_actor   & is_pf),
+      TOV_evt = as.integer(is_actor   & is_tov)
+    ) %>%
+    arrange(row_id) %>%
+    mutate(
+      PTS = cumsum(PTS_evt),
+      FG  = cumsum(FG_evt),
+      FGA = cumsum(FGA_evt),
+      FT  = cumsum(FT_evt),
+      FTA = cumsum(FTA_evt),
+      ORB = cumsum(ORB_evt),
+      DRB = cumsum(DRB_evt),
+      STL = cumsum(STL_evt),
+      AST = cumsum(AST_evt),
+      BLK = cumsum(BLK_evt),
+      PF  = cumsum(PF_evt),
+      TOV = cumsum(TOV_evt),
+
+      Perf = PTS + 0.4*FG - 0.7*FGA - 0.4*(FTA - FT) +
+             0.7*ORB + 0.3*DRB + STL + 0.7*AST + 0.6*BLK - 0.4*PF - TOV,
+      dPerf = Perf - dplyr::lag(Perf, default = 0)
+    ) %>%
+    transmute(game_id, row_id, Perf, dPerf)
+}
+
+# Build table 
+process_one_game <- function(game_df, players) {
+  parsed <- parse_one_game(game_df)
+
+  base <- parsed %>%
+    select(game_id, row_id,
+           any_of("clock_display_value"),
+           player_on_event) %>%
+    distinct()
+
+  wide <- base
+  for (p in players) {
+    res <- compute_player_perf(parsed, p)
+    suf <- clean_suffix(p)
+    res <- res %>%
+      rename(!!paste0("Perf_",  suf) := Perf,
+             !!paste0("dPerf_", suf) := dPerf)
+    wide <- wide %>% left_join(res, by = c("game_id", "row_id"))
+  }
+  wide
+}
+
+# run on all nba_pbp 
+out_full <- nba_pbp %>%
+  group_by(game_id) %>%
+  group_split() %>%
+  map_df(~ process_one_game(.x, players))
+```
+
+```{r}
+View(out_full)
+```
+
+```{r}
+readr::write_csv(out_full, "out_full.csv")
+```
+
+## Stop here
+
+Season long (not ideal, games stacked on each other)
+
+```{r}
+# Packages
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(purrr)
+
+# ─────────────────────────────────────────────────────────────
+# 0) Assumptions about your season tibble
+#    - name: nba_pbp_2025
+#    - columns: game_id, text, type_text, home_score, away_score
+#    - already sorted by true event order within each game
+#      (If not, sort by period + event_num or the feed’s sequence col.)
+# ─────────────────────────────────────────────────────────────
+
+# Helper: parse one game's PBP into roles and shot flags
+parse_one_game <- function(game_df) {
+  game_df %>%
+    mutate(
+      row_id = row_number(),
+      text_clean = text %>%
+        str_replace_all("[\u2013\u2014]", "-") %>%  # normalize long dashes
+        str_replace_all("\\s+'s", "'s") %>%
+        str_squish(),
+      lower = tolower(text_clean),
+
+      actor = str_trim(str_extract(
+        text_clean,
+        "^[^()]*?(?=\\b(makes|misses|blocks|defensive rebound|offensive rebound|personal foul|shooting foul|turnover|steal|block|assist|jumpball|gains possession)\\b)"
+      )),
+
+      block_victim = str_match(text_clean, "blocks\\s+([^()]+?)(?:'s|\\s|$)")[,2],
+      blocked_by   = str_match(text_clean, "\\(blocked by ([^()]+)\\)")[,2],
+      assister     = str_match(text_clean, "\\(([^()]+) assists\\)")[,2],
+      steals_paren = str_match(text_clean, "\\(([^()]+) steals\\)")[,2],
+
+      is_ft  = str_detect(lower, "free throw"),
+      is_fg_phrase = str_detect(lower, "jump|layup|dunk|hook|fade|step back|pullup|bank|tip") & !is_ft,
+      made   = str_detect(lower, "\\bmakes\\b"),
+      missed = str_detect(lower, "\\bmisses\\b"),
+      is_fg  = is_fg_phrase & (made | missed),
+
+      shooter_name = case_when(
+        is_fg & !is.na(actor) ~ actor,
+        str_detect(lower, "blocks") & !is.na(block_victim) ~ block_victim,
+        is_ft & !is.na(actor) ~ actor,
+        TRUE ~ NA_character_
+      ),
+      blocker_name = case_when(
+        str_detect(lower, "blocks") ~ actor,
+        !is.na(blocked_by) ~ blocked_by,
+        TRUE ~ NA_character_
+      ),
+      stealer_name = case_when(
+        str_detect(lower, "steal") ~ actor,
+        !is.na(steals_paren) ~ steals_paren,
+        TRUE ~ NA_character_
+      ),
+
+      is_orb = str_detect(type_text, regex("^Offensive Rebound$", ignore_case = TRUE)),
+      is_drb = str_detect(type_text, regex("^Defensive Rebound$", ignore_case = TRUE)),
+      is_pf  = str_detect(type_text, regex("Foul", ignore_case = TRUE)),
+      is_tov = str_detect(type_text, regex("Turnover", ignore_case = TRUE)),
+
+      is_three = str_detect(lower, "three point|3[- ]?pt|3pt"),
+      pts_on_make = case_when(
+        is_ft & made ~ 1L,
+        is_fg & made & is_three ~ 3L,
+        is_fg & made ~ 2L,
+        TRUE ~ 0L
+      )
+    ) %>%
+    select(
+      game_id, row_id, text, type_text, home_score, away_score,
+      actor, shooter_name, assister, blocker_name, stealer_name,
+      is_fg, is_ft, made, is_orb, is_drb, is_pf, is_tov, pts_on_make
+    )
+}
+
+# Helper: compute per-row Perf/dPerf for one player within ONE game
+compute_player_perf_one_game <- function(parsed_game, player_name) {
+  parsed_game %>%
+    mutate(
+      is_shooter  = !is.na(shooter_name) & shooter_name  == player_name,
+      is_actor    = !is.na(actor)        & actor         == player_name,
+      is_assister = !is.na(assister)     & assister      == player_name,
+      is_blocker  = !is.na(blocker_name) & blocker_name  == player_name,
+      is_stealer  = !is.na(stealer_name) & stealer_name  == player_name,
+
+      # event-level increments (0 when not involved)
+      FGA_evt = as.integer(is_shooter & is_fg),
+      FG_evt  = as.integer(is_shooter & is_fg & made),
+      FTA_evt = as.integer(is_shooter & is_ft),
+      FT_evt  = as.integer(is_shooter & is_ft & made),
+      PTS_evt = if_else(is_shooter, pts_on_make, 0L),
+
+      ORB_evt = as.integer(is_actor   & is_orb),
+      DRB_evt = as.integer(is_actor   & is_drb),
+      AST_evt = as.integer(is_assister & is_fg & made),
+      BLK_evt = as.integer(is_blocker),
+      STL_evt = as.integer(is_stealer),
+      PF_evt  = as.integer(is_actor   & is_pf),
+      TOV_evt = as.integer(is_actor   & is_tov)
+    ) %>%
+    arrange(row_id) %>%
+    mutate(
+      # Running totals reset automatically because this function is per game
+      PTS = cumsum(PTS_evt),
+      FG  = cumsum(FG_evt),
+      FGA = cumsum(FGA_evt),
+      FT  = cumsum(FT_evt),
+      FTA = cumsum(FTA_evt),
+      ORB = cumsum(ORB_evt),
+      DRB = cumsum(DRB_evt),
+      STL = cumsum(STL_evt),
+      AST = cumsum(AST_evt),
+      BLK = cumsum(BLK_evt),
+      PF  = cumsum(PF_evt),
+      TOV = cumsum(TOV_evt),
+
+      Perf = PTS + 0.4*FG - 0.7*FGA - 0.4*(FTA - FT) +
+             0.7*ORB + 0.3*DRB + STL + 0.7*AST + 0.6*BLK - 0.4*PF - TOV,
+      dPerf = Perf - dplyr::lag(Perf, default = 0)
+    ) %>%
+    transmute(game_id, row_id, player = player_name, Perf, dPerf)
+}
+
+# Helper: build ALL players × rows for ONE game, then compute/reset per game
+compute_all_players_one_game <- function(game_df) {
+  parsed <- parse_one_game(game_df)
+
+  # discover players who appear in the game
+  players <- parsed %>%
+    select(actor, shooter_name, assister, blocker_name, stealer_name) %>%
+    pivot_longer(everything(), values_to = "player") %>%
+    distinct(player) %>%
+    filter(!is.na(player), player != "") %>%
+    arrange(player) %>%
+    pull(player)
+
+  # compute per player, bind rows (long format)
+  map_df(players, ~compute_player_perf_one_game(parsed, .x))
+}
+
+# ─────────────────────────────────────────────────────────────
+# 1) Run across the whole season, game-by-game
+# ─────────────────────────────────────────────────────────────
+# If not sorted, do something like:
+# nba_pbp_2025 <- nba_pbp_2025 %>% arrange(game_id, period, event_num)
+
+season_long <- nba_pbp_2025 %>%
+  group_by(game_id) %>%
+  group_split() %>%
+  map_df(compute_all_players_one_game)
+
+# season_long columns:
+#   game_id | row_id | player | Perf | dPerf
+# One row per (game row, player). Running totals restart for every (game_id, player).
+
+# ─────────────────────────────────────────────────────────────
+# 2) Optional: attach the raw event text/scores back (useful for plotting)
+# ─────────────────────────────────────────────────────────────
+season_events <- nba_pbp_2025 %>%
+  group_by(game_id) %>%
+  mutate(row_id = row_number()) %>%
+  ungroup() %>%
+  select(game_id, row_id, text, type_text, home_score, away_score, clock_display_value)
+
+season_long <- season_long %>%
+  left_join(season_events, by = c("game_id", "row_id"))
+
+# Now `season_long` has everything you need:
+# - resets within each game (by construction),
+# - per-row Perf & dPerf for every player,
+# - and the event context (text/type_text/scores).
+
+```
+
+```{r}
+View(season_long)
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+Another iteration, player parsing, wide view, no player on event
+
+```{r}
+# Packages
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(purrr)
+
+# ============ Helpers ============
+
+# Sanitize a player name into a safe column suffix
+clean_suffix <- function(x) {
+  x %>%
+    str_replace_all("[\u2013\u2014]", "-") %>%
+    str_replace_all("[^A-Za-z0-9]+", "_") %>%
+    str_replace_all("^_+|_+$", "") %>%
+    tolower()
+}
+
+# Parse one game's PBP into roles & flags
+parse_one_game <- function(game_df) {
+  game_df %>%
+    mutate(
+      row_id = row_number(),
+      text_clean = text %>%
+        str_replace_all("[\u2013\u2014]", "-") %>%   # normalize long dashes
+        str_replace_all("\\s+'s", "'s") %>%
+        str_squish(),
+      lower = tolower(text_clean),
+
+      actor = str_trim(str_extract(
+        text_clean,
+        "^[^()]*?(?=\\b(makes|misses|blocks|defensive rebound|offensive rebound|personal foul|shooting foul|turnover|steal|block|assist|jumpball|gains possession)\\b)"
+      )),
+
+      block_victim = str_match(text_clean, "blocks\\s+([^()]+?)(?:'s|\\s|$)")[,2],
+      blocked_by   = str_match(text_clean, "\\(blocked by ([^()]+)\\)")[,2],
+      assister     = str_match(text_clean, "\\(([^()]+) assists\\)")[,2],
+      steals_paren = str_match(text_clean, "\\(([^()]+) steals\\)")[,2],
+
+      is_ft  = str_detect(lower, "free throw"),
+      is_fg_phrase = str_detect(lower, "jump|layup|dunk|hook|fade|step back|pullup|bank|tip") & !is_ft,
+      made   = str_detect(lower, "\\bmakes\\b"),
+      missed = str_detect(lower, "\\bmisses\\b"),
+      is_fg  = is_fg_phrase & (made | missed),
+
+      shooter_name = case_when(
+        is_fg & !is.na(actor) ~ actor,
+        str_detect(lower, "blocks") & !is.na(block_victim) ~ block_victim,
+        is_ft & !is.na(actor) ~ actor,
+        TRUE ~ NA_character_
+      ),
+      blocker_name = case_when(
+        str_detect(lower, "blocks") ~ actor,
+        !is.na(blocked_by) ~ blocked_by,
+        TRUE ~ NA_character_
+      ),
+      stealer_name = case_when(
+        str_detect(lower, "steal") ~ actor,
+        !is.na(steals_paren) ~ steals_paren,
+        TRUE ~ NA_character_
+      ),
+
+      is_orb = str_detect(type_text, regex("^Offensive Rebound$", ignore_case = TRUE)),
+      is_drb = str_detect(type_text, regex("^Defensive Rebound$", ignore_case = TRUE)),
+      is_pf  = str_detect(type_text, regex("Foul", ignore_case = TRUE)),
+      is_tov = str_detect(type_text, regex("Turnover", ignore_case = TRUE)),
+
+      is_three = str_detect(lower, "three point|3[- ]?pt|3pt"),
+      pts_on_make = case_when(
+        is_ft & made ~ 1L,
+        is_fg & made & is_three ~ 3L,
+        is_fg & made ~ 2L,
+        TRUE ~ 0L
+      )
+    ) %>%
+    select(
+      game_id, row_id, clock_display_value, text, type_text,
+      home_score, away_score,
+      actor, shooter_name, assister, blocker_name, stealer_name,
+      is_fg, is_ft, made, is_orb, is_drb, is_pf, is_tov, pts_on_make
+    )
+}
+
+# Compute per-row Perf for ONE player in ONE game (running totals reset here)
+perf_for_player_game <- function(parsed_game, player_name) {
+  df <- parsed_game %>%
+    mutate(
+      is_shooter  = !is.na(shooter_name) & shooter_name  == player_name,
+      is_actor    = !is.na(actor)        & actor         == player_name,
+      is_assister = !is.na(assister)     & assister      == player_name,
+      is_blocker  = !is.na(blocker_name) & blocker_name  == player_name,
+      is_stealer  = !is.na(stealer_name) & stealer_name  == player_name,
+
+      # event-level increments
+      FGA_evt = as.integer(is_shooter & is_fg),
+      FG_evt  = as.integer(is_shooter & is_fg & made),
+      FTA_evt = as.integer(is_shooter & is_ft),
+      FT_evt  = as.integer(is_shooter & is_ft & made),
+      PTS_evt = if_else(is_shooter, pts_on_make, 0L),
+
+      ORB_evt = as.integer(is_actor   & is_orb),
+      DRB_evt = as.integer(is_actor   & is_drb),
+      AST_evt = as.integer(is_assister & is_fg & made),
+      BLK_evt = as.integer(is_blocker),
+      STL_evt = as.integer(is_stealer),
+      PF_evt  = as.integer(is_actor   & is_pf),
+      TOV_evt = as.integer(is_actor   & is_tov)
+    ) %>%
+    arrange(row_id) %>%
+    mutate(
+      PTS = cumsum(PTS_evt),
+      FG  = cumsum(FG_evt),
+      FGA = cumsum(FGA_evt),
+      FT  = cumsum(FT_evt),
+      FTA = cumsum(FTA_evt),
+      ORB = cumsum(ORB_evt),
+      DRB = cumsum(DRB_evt),
+      STL = cumsum(STL_evt),
+      AST = cumsum(AST_evt),
+      BLK = cumsum(BLK_evt),
+      PF  = cumsum(PF_evt),
+      TOV = cumsum(TOV_evt),
+
+      Perf = PTS + 0.4*FG - 0.7*FGA - 0.4*(FTA - FT) +
+             0.7*ORB + 0.3*DRB + STL + 0.7*AST + 0.6*BLK - 0.4*PF - TOV
+      # dPerf = Perf - dplyr::lag(Perf, default = 0)  # ← uncomment if you also want wide dPerf_*
+    ) %>%
+    transmute(game_id, row_id, Perf)  # keep it lean
+
+  # name the column by player
+  suf <- clean_suffix(player_name)
+  names(df)[names(df) == "Perf"] <- paste0("Perf_", suf)
+  df
+}
+
+# Build a wide table (one column per player) for ONE game
+wide_for_game <- function(game_df) {
+  parsed <- parse_one_game(game_df)
+
+  # discover players in this game
+  players <- parsed %>%
+    select(actor, shooter_name, assister, blocker_name, stealer_name) %>%
+    pivot_longer(everything(), values_to = "player") %>%
+    distinct(player) %>% filter(!is.na(player), player != "") %>% pull(player)
+
+  # base timeline (keys/metadata you want to keep)
+  base <- parsed %>%
+    select(game_id, row_id, clock_display_value, home_score, away_score) %>%
+    distinct()
+
+  # compute a Perf column per player, then reduce left-joins
+  perf_list <- map(players, ~ perf_for_player_game(parsed, .x))
+  reduce(perf_list, ~ left_join(.x, .y, by = c("game_id", "row_id"))) %>%
+    left_join(base, by = c("game_id", "row_id")) %>%
+    relocate(game_id, row_id, clock_display_value, home_score, away_score)
+}
+
+# ============ Season build ============
+
+# If needed, sort within game first (e.g., by period + event_num):
+# nba_pbp_2025 <- nba_pbp_2025 %>% arrange(game_id, period, event_num)
+
+# Split by game, compute wide tables, and bind
+season_wide <- nba_pbp_2025 %>%
+  group_by(game_id) %>%
+  group_split() %>%
+  map_df(wide_for_game)
+
+
+```
+
+Parsng through all players (some errors, may be easier to input own player list for simplicity)
+
+```{r}
+# =========================
+# Season-wide Perf (wide)
+# =========================
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(purrr)
+
+# -------------------------
+# Utilities / Config
+# -------------------------
+clean_suffix <- function(x) {
+  x %>%
+    str_replace_all("[\u2013\u2014]", "-") %>%     # normalize long dashes
+    str_replace_all("[^A-Za-z0-9]+", "_") %>%     # safe colname chars
+    str_replace_all("^_+|_+$", "") %>%            # trim edge underscores
+    tolower()
+}
+
+# -------------------------
+# Parse one game's PBP
+# -------------------------
+parse_one_game <- function(game_df) {
+  game_df %>%
+    mutate(
+      row_id = row_number(),
+      text_clean = text %>%
+        str_replace_all("[\u2013\u2014]", "-") %>%
+        str_replace_all("\\s+'s", "'s") %>%
+        str_squish(),
+      lower = tolower(text_clean),
+
+      # Primary actor = name at start before first key verb/phrase
+      actor = str_trim(str_extract(
+        text_clean,
+        "^[^()]*?(?=\\b(makes|misses|blocks|defensive rebound|offensive rebound|personal foul|shooting foul|turnover|steal|block|assist|jumpball|gains possession)\\b)"
+      )),
+
+      # Secondary participants
+      block_victim = str_match(text_clean, "blocks\\s+([^()]+?)(?:'s|\\s|$)")[,2],
+      blocked_by   = str_match(text_clean, "\\(blocked by ([^()]+)\\)")[,2],
+      assister     = str_match(text_clean, "\\(([^()]+) assists\\)")[,2],
+      steals_paren = str_match(text_clean, "\\(([^()]+) steals\\)")[,2],
+
+      # Event type flags
+      is_ft  = str_detect(lower, "free throw"),
+      is_fg_phrase = str_detect(lower, "jump|layup|dunk|hook|fade|step back|pullup|bank|tip") & !is_ft,
+      made   = str_detect(lower, "\\bmakes\\b"),
+      missed = str_detect(lower, "\\bmisses\\b"),
+      is_fg  = is_fg_phrase & (made | missed),
+
+      # Roles derived
+      shooter_name = case_when(
+        is_fg & !is.na(actor) ~ actor,
+        str_detect(lower, "blocks") & !is.na(block_victim) ~ block_victim,
+        is_ft & !is.na(actor) ~ actor,
+        TRUE ~ NA_character_
+      ),
+      blocker_name = case_when(
+        str_detect(lower, "blocks") ~ actor,
+        !is.na(blocked_by) ~ blocked_by,
+        TRUE ~ NA_character_
+      ),
+      stealer_name = case_when(
+        str_detect(lower, "steal") ~ actor,
+        !is.na(steals_paren) ~ steals_paren,
+        TRUE ~ NA_character_
+      ),
+
+      is_orb = str_detect(type_text, regex("^Offensive Rebound$", ignore_case = TRUE)),
+      is_drb = str_detect(type_text, regex("^Defensive Rebound$", ignore_case = TRUE)),
+      is_pf  = str_detect(type_text, regex("Foul", ignore_case = TRUE)),
+      is_tov = str_detect(type_text, regex("Turnover", ignore_case = TRUE)),
+
+      # Points on makes (1 FT, 2/3 FG)
+      is_three = str_detect(lower, "three point|3[- ]?pt|3pt"),
+      pts_on_make = case_when(
+        is_ft & made ~ 1L,
+        is_fg & made & is_three ~ 3L,
+        is_fg & made ~ 2L,
+        TRUE ~ 0L
+      )
+    ) %>%
+    rowwise() %>%
+    mutate(
+      # Everyone mentioned on this row
+      player_on_event = {
+        parts <- c(actor, shooter_name, assister, blocker_name, stealer_name, block_victim)
+        parts <- unique(na.omit(parts[parts != ""]))
+        if (length(parts) == 0) NA_character_ else paste(parts, collapse = "; ")
+      },
+      # Role-tagged list of *whose metrics change* on this row
+      adjusted_players = {
+        tags <- character(0)
+        if (!is.na(shooter_name)) {
+          # Shooters affect PTS/FG/FTA/FT/FGA depending on made/miss/FT
+          role <- if (is_ft) "Shooter(FT)" else if (made) "Shooter(FG make)" else if (is_fg) "Shooter(FG miss)" else "Shooter"
+          tags <- c(tags, paste0(role, ": ", shooter_name))
+        }
+        if (isTRUE(made) && !is.na(assister)) tags <- c(tags, paste0("Assister: ", assister))
+        if (!is.na(blocker_name) && str_detect(tolower(text_clean), "block")) tags <- c(tags, paste0("Blocker: ", blocker_name))
+        if (!is.na(stealer_name) && str_detect(tolower(text_clean), "steal")) tags <- c(tags, paste0("Stealer: ", stealer_name))
+        if (isTRUE(is_orb) && !is.na(actor)) tags <- c(tags, paste0("ORB: ", actor))
+        if (isTRUE(is_drb) && !is.na(actor)) tags <- c(tags, paste0("DRB: ", actor))
+        if (isTRUE(is_pf)  && !is.na(actor)) tags <- c(tags, paste0("PF: ", actor))
+        if (isTRUE(is_tov) && !is.na(actor)) tags <- c(tags, paste0("TOV: ", actor))
+        if (length(tags) == 0) NA_character_ else paste(tags, collapse = "; ")
+      }
+    ) %>%
+    ungroup() %>%
+    select(
+      game_id, row_id, clock_display_value, text, type_text,
+      home_score, away_score,
+      actor, shooter_name, assister, blocker_name, stealer_name, block_victim,
+      is_fg, is_ft, made, is_orb, is_drb, is_pf, is_tov, pts_on_make,
+      player_on_event, adjusted_players
+    )
+}
+
+# -------------------------
+# Per-player Perf for ONE game (running totals reset here)
+# -------------------------
+perf_for_player_game <- function(parsed_game, player_name, keep_dperf = FALSE) {
+  df <- parsed_game %>%
+    mutate(
+      is_shooter  = !is.na(shooter_name) & shooter_name  == player_name,
+      is_actor    = !is.na(actor)        & actor         == player_name,
+      is_assister = !is.na(assister)     & assister      == player_name,
+      is_blocker  = !is.na(blocker_name) & blocker_name  == player_name,
+      is_stealer  = !is.na(stealer_name) & stealer_name  == player_name,
+
+      # Event-level increments (0 when not involved)
+      FGA_evt = as.integer(is_shooter & is_fg),
+      FG_evt  = as.integer(is_shooter & is_fg & made),
+      FTA_evt = as.integer(is_shooter & is_ft),
+      FT_evt  = as.integer(is_shooter & is_ft & made),
+      PTS_evt = if_else(is_shooter, pts_on_make, 0L),
+
+      ORB_evt = as.integer(is_actor   & is_orb),
+      DRB_evt = as.integer(is_actor   & is_drb),
+      AST_evt = as.integer(is_assister & is_fg & made),
+      BLK_evt = as.integer(is_blocker),
+      STL_evt = as.integer(is_stealer),
+      PF_evt  = as.integer(is_actor   & is_pf),
+      TOV_evt = as.integer(is_actor   & is_tov)
+    ) %>%
+    arrange(row_id) %>%
+    mutate(
+      # Running totals reset per game
+      PTS = cumsum(PTS_evt),
+      FG  = cumsum(FG_evt),
+      FGA = cumsum(FGA_evt),
+      FT  = cumsum(FT_evt),
+      FTA = cumsum(FTA_evt),
+      ORB = cumsum(ORB_evt),
+      DRB = cumsum(DRB_evt),
+      STL = cumsum(STL_evt),
+      AST = cumsum(AST_evt),
+      BLK = cumsum(BLK_evt),
+      PF  = cumsum(PF_evt),
+      TOV = cumsum(TOV_evt),
+
+      Perf = PTS + 0.4*FG - 0.7*FGA - 0.4*(FTA - FT) +
+             0.7*ORB + 0.3*DRB + STL + 0.7*AST + 0.6*BLK - 0.4*PF - TOV,
+      dPerf = Perf - dplyr::lag(Perf, default = 0)
+    ) %>%
+    transmute(game_id, row_id, Perf, dPerf)
+
+  suf <- clean_suffix(player_name)
+  names(df)[names(df) == "Perf"]  <- paste0("Perf_",  suf)
+  names(df)[names(df) == "dPerf"] <- paste0("dPerf_", suf)
+
+  if (!keep_dperf) df <- select(df, -starts_with("dPerf_"))
+  df
+}
+
+# -------------------------
+# Wide table for ONE game
+#   - If player_list is provided, use it (intersect with names found)
+#   - Otherwise auto-discover all players named in this game
+# -------------------------
+wide_for_game <- function(game_df, player_list = NULL, keep_dperf = FALSE) {
+  parsed <- parse_one_game(game_df)
+
+  # Discover names present in this game
+  discovered <- parsed %>%
+    select(actor, shooter_name, assister, blocker_name, stealer_name) %>%
+    pivot_longer(everything(), values_to = "player") %>%
+    distinct(player) %>% filter(!is.na(player), player != "") %>% pull(player)
+
+  if (is.null(player_list)) {
+    players <- discovered
+  } else {
+    # Use your provided list; keep only those that actually appear in this game
+    players <- intersect(player_list, discovered)
+  }
+
+  # Base timeline / metadata (one row per event)
+  base <- parsed %>%
+    select(game_id, row_id, clock_display_value, home_score, away_score,
+           player_on_event, adjusted_players) %>%
+    distinct()
+
+  # Build Perf (and optional dPerf) columns for each player in this game
+  perf_list <- map(players, ~ perf_for_player_game(parsed, .x, keep_dperf = keep_dperf))
+
+  # Combine horizontally, then add base columns
+  wide <- if (length(perf_list) == 0) base else {
+    reduce(perf_list, ~ left_join(.x, .y, by = c("game_id", "row_id"))) %>%
+      left_join(base, by = c("game_id", "row_id"))
+  }
+
+  wide %>%
+    relocate(game_id, row_id, clock_display_value, home_score, away_score,
+             player_on_event, adjusted_players)
+}
+
+
+#my_players <- c()
+build_season_wide <- function(nba_pbp_2025,
+                              player_list = NULL,   # <- supply your ~100 names here if you want
+                              keep_dperf = FALSE,   # TRUE to also build dPerf_* columns
+                              fill_na_zero = FALSE  # set TRUE to replace NA with 0
+) {
+  # If needed: sort within game (uncomment/adapt if you have these cols)
+  # nba_pbp_2025 <- nba_pbp_2025 %>% arrange(game_id, period, event_num)
+
+  game_list <- nba_pbp_2025 %>%
+    group_by(game_id) %>%
+    group_split()
+
+  season_wide_2 <- map_df(game_list, ~ wide_for_game(.x, player_list, keep_dperf))
+
+  if (fill_na_zero) {
+    perf_cols <- grepl("^Perf_", names(season_wide))
+    season_wide[perf_cols][is.na(season_wide[perf_cols])] <- 0
+    if (keep_dperf) {
+      dperf_cols <- grepl("^dPerf_", names(season_wide))
+      season_wide[dperf_cols][is.na(season_wide[dperf_cols])] <- 0
+    }
+  }
+
+  season_wide_2
+}
+
+# =========================
+# HOW TO RUN
+# =========================
+
+# 1) Auto-discover all players across the season (Perf only), keep NAs:
+# season_wide <- build_season_wide(nba_pbp_2025)
+
+# 2) Provide YOUR 100-player list (names exactly as in `text`);
+#    we’ll compute columns only for those players (saves width):
+# my_players <- c("Shai Gilgeous-Alexander", "Andrew Nembhard", "Aaron Nesmith", "... up to 100 ...")
+# season_wide <- build_season_wide(nba_pbp_2025, player_list = my_players)
+
+# 3) If you also want dPerf_* columns:
+# season_wide <- build_season_wide(nba_pbp_2025, player_list = my_players, keep_dperf = TRUE)
+
+# 4) If you prefer zeros instead of NA where a player isn’t present on a row:
+# season_wide <- build_season_wide(nba_pbp_2025, player_list = my_players, fill_na_zero = TRUE)
+
+```
+
+Work in progress, filter for 10+ points
+
+```{r}
+# =========================
+# Season-wide Perf (wide)
+# =========================
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(purrr)
+
+# -------------------------
+# Utilities / Config
+# -------------------------
+clean_suffix <- function(x) {
+  x %>%
+    str_replace_all("[\u2013\u2014]", "-") %>%     # normalize long dashes
+    str_replace_all("[^A-Za-z0-9]+", "_") %>%     # safe colname chars
+    str_replace_all("^_+|_+$", "") %>%            # trim edge underscores
+    tolower()
+}
+
+# -------------------------
+# Parse one game's PBP
+# Requires columns: game_id, text, type_text, clock_display_value, home_score, away_score
+# Row order should already reflect true sequence (else sort by your period/event fields before calling).
+# -------------------------
+parse_one_game <- function(game_df) {
+  game_df %>%
+    mutate(
+      row_id = row_number(),
+      text_clean = text %>%
+        str_replace_all("[\u2013\u2014]", "-") %>%
+        str_replace_all("\\s+'s", "'s") %>%
+        str_squish(),
+      lower = tolower(text_clean),
+
+      # Primary actor = name at start before first key verb/phrase
+      actor = str_trim(str_extract(
+        text_clean,
+        "^[^()]*?(?=\\b(makes|misses|blocks|defensive rebound|offensive rebound|personal foul|shooting foul|turnover|steal|block|assist|jumpball|gains possession)\\b)"
+      )),
+
+      # Secondary participants
+      block_victim = str_match(text_clean, "blocks\\s+([^()]+?)(?:'s|\\s|$)")[,2],
+      blocked_by   = str_match(text_clean, "\\(blocked by ([^()]+)\\)")[,2],
+      assister     = str_match(text_clean, "\\(([^()]+) assists\\)")[,2],
+      steals_paren = str_match(text_clean, "\\(([^()]+) steals\\)")[,2],
+
+      # Event type flags
+      is_ft  = str_detect(lower, "free throw"),
+      is_fg_phrase = str_detect(lower, "jump|layup|dunk|hook|fade|step back|pullup|bank|tip") & !is_ft,
+      made   = str_detect(lower, "\\bmakes\\b"),
+      missed = str_detect(lower, "\\bmisses\\b"),
+      is_fg  = is_fg_phrase & (made | missed),
+
+      # Roles derived
+      shooter_name = case_when(
+        is_fg & !is.na(actor) ~ actor,
+        str_detect(lower, "blocks") & !is.na(block_victim) ~ block_victim,
+        is_ft & !is.na(actor) ~ actor,
+        TRUE ~ NA_character_
+      ),
+      blocker_name = case_when(
+        str_detect(lower, "blocks") ~ actor,
+        !is.na(blocked_by) ~ blocked_by,
+        TRUE ~ NA_character_
+      ),
+      stealer_name = case_when(
+        str_detect(lower, "steal") ~ actor,
+        !is.na(steals_paren) ~ steals_paren,
+        TRUE ~ NA_character_
+      ),
+
+      is_orb = str_detect(type_text, regex("^Offensive Rebound$", ignore_case = TRUE)),
+      is_drb = str_detect(type_text, regex("^Defensive Rebound$", ignore_case = TRUE)),
+      is_pf  = str_detect(type_text, regex("Foul", ignore_case = TRUE)),
+      is_tov = str_detect(type_text, regex("Turnover", ignore_case = TRUE)),
+
+      # Points on makes (1 FT, 2/3 FG)
+      is_three = str_detect(lower, "three point|3[- ]?pt|3pt"),
+      pts_on_make = case_when(
+        is_ft & made ~ 1L,
+        is_fg & made & is_three ~ 3L,
+        is_fg & made ~ 2L,
+        TRUE ~ 0L
+      )
+    ) %>%
+    rowwise() %>%
+    mutate(
+      # Everyone mentioned on this row
+      player_on_event = {
+        parts <- c(actor, shooter_name, assister, blocker_name, stealer_name, block_victim)
+        parts <- unique(na.omit(parts[parts != ""]))
+        if (length(parts) == 0) NA_character_ else paste(parts, collapse = "; ")
+      },
+      # Role-tagged list of whose metrics change on this row
+      adjusted_players = {
+        tags <- character(0)
+        if (!is.na(shooter_name)) {
+          role <- if (is_ft) "Shooter(FT)" else if (made) "Shooter(FG make)" else if (is_fg) "Shooter(FG miss)" else "Shooter"
+          tags <- c(tags, paste0(role, ": ", shooter_name))
+        }
+        if (isTRUE(made) && !is.na(assister)) tags <- c(tags, paste0("Assister: ", assister))
+        if (!is.na(blocker_name) && str_detect(lower, "block")) tags <- c(tags, paste0("Blocker: ", blocker_name))
+        if (!is.na(stealer_name) && str_detect(lower, "steal")) tags <- c(tags, paste0("Stealer: ", stealer_name))
+        if (isTRUE(is_orb) && !is.na(actor)) tags <- c(tags, paste0("ORB: ", actor))
+        if (isTRUE(is_drb) && !is.na(actor)) tags <- c(tags, paste0("DRB: ", actor))
+        if (isTRUE(is_pf)  && !is.na(actor)) tags <- c(tags, paste0("PF: ", actor))
+        if (isTRUE(is_tov) && !is.na(actor)) tags <- c(tags, paste0("TOV: ", actor))
+        if (length(tags) == 0) NA_character_ else paste(tags, collapse = "; ")
+      }
+    ) %>%
+    ungroup() %>%
+    select(
+      game_id, row_id, clock_display_value, text, type_text,
+      home_score, away_score,
+      actor, shooter_name, assister, blocker_name, stealer_name, block_victim,
+      is_fg, is_ft, made, is_orb, is_drb, is_pf, is_tov, pts_on_make,
+      player_on_event, adjusted_players
+    )
+}
+
+# -------------------------
+# Per-player Perf for ONE game (running totals reset here)
+# keep_dperf = TRUE will also return dPerf_<player>
+# -------------------------
+perf_for_player_game <- function(parsed_game, player_name, keep_dperf = FALSE) {
+  df <- parsed_game %>%
+    mutate(
+      is_shooter  = !is.na(shooter_name) & shooter_name  == player_name,
+      is_actor    = !is.na(actor)        & actor         == player_name,
+      is_assister = !is.na(assister)     & assister      == player_name,
+      is_blocker  = !is.na(blocker_name) & blocker_name  == player_name,
+      is_stealer  = !is.na(stealer_name) & stealer_name  == player_name,
+
+      # Event-level increments (0 when not involved)
+      FGA_evt = as.integer(is_shooter & is_fg),
+      FG_evt  = as.integer(is_shooter & is_fg & made),
+      FTA_evt = as.integer(is_shooter & is_ft),
+      FT_evt  = as.integer(is_shooter & is_ft & made),
+      PTS_evt = if_else(is_shooter, pts_on_make, 0L),
+
+      ORB_evt = as.integer(is_actor   & is_orb),
+      DRB_evt = as.integer(is_actor   & is_drb),
+      AST_evt = as.integer(is_assister & is_fg & made),
+      BLK_evt = as.integer(is_blocker),
+      STL_evt = as.integer(is_stealer),
+      PF_evt  = as.integer(is_actor   & is_pf),
+      TOV_evt = as.integer(is_actor   & is_tov)
+    ) %>%
+    arrange(row_id) %>%
+    mutate(
+      # Running totals reset per game
+      PTS = cumsum(PTS_evt),
+      FG  = cumsum(FG_evt),
+      FGA = cumsum(FGA_evt),
+      FT  = cumsum(FT_evt),
+      FTA = cumsum(FTA_evt),
+      ORB = cumsum(ORB_evt),
+      DRB = cumsum(DRB_evt),
+      STL = cumsum(STL_evt),
+      AST = cumsum(AST_evt),
+      BLK = cumsum(BLK_evt),
+      PF  = cumsum(PF_evt),
+      TOV = cumsum(TOV_evt),
+
+      Perf = PTS + 0.4*FG - 0.7*FGA - 0.4*(FTA - FT) +
+             0.7*ORB + 0.3*DRB + STL + 0.7*AST + 0.6*BLK - 0.4*PF - TOV,
+      dPerf = Perf - dplyr::lag(Perf, default = 0)
+    ) %>%
+    transmute(game_id, row_id, Perf, dPerf)
+
+  suf <- clean_suffix(player_name)
+  names(df)[names(df) == "Perf"]  <- paste0("Perf_",  suf)
+  names(df)[names(df) == "dPerf"] <- paste0("dPerf_", suf)
+
+  if (!keep_dperf) df <- select(df, -starts_with("dPerf_"))
+  df
+}
+
+# -------------------------
+# Wide table for ONE game
+# - player_list: optional vector of names to compute (exactly as in `text`).
+# - min_points_per_game: keep players with >= X points *in this game*.
+# -------------------------
+wide_for_game <- function(game_df,
+                          player_list = NULL,
+                          keep_dperf = FALSE,
+                          min_points_per_game = 10) {
+  parsed <- parse_one_game(game_df)
+
+  # Discover names present in this game
+  discovered <- parsed %>%
+    select(actor, shooter_name, assister, blocker_name, stealer_name) %>%
+    pivot_longer(everything(), values_to = "player") %>%
+    distinct(player) %>% filter(!is.na(player), player != "") %>% pull(player)
+
+  # If you passed a custom list, intersect with discovered; else use all discovered
+  base_pool <- if (is.null(player_list)) discovered else intersect(player_list, discovered)
+
+  # Quick per-game points by shooter (cheap; already parsed)
+  pts_this_game <- parsed %>%
+    filter(!is.na(shooter_name)) %>%
+    group_by(shooter_name) %>%
+    summarise(pts = sum(pts_on_make), .groups = "drop")
+
+  # Keep only players meeting the per-game threshold
+  players <- base_pool[base_pool %in% pts_this_game$shooter_name[pts_this_game$pts >= min_points_per_game]]
+
+  # Base timeline / metadata (one row per event)
+  base <- parsed %>%
+    select(game_id, row_id, clock_display_value, home_score, away_score,
+           player_on_event, adjusted_players) %>%
+    distinct()
+
+  # Build Perf (and optional dPerf) columns for each player in this game
+  perf_list <- map(players, ~ perf_for_player_game(parsed, .x, keep_dperf = keep_dperf))
+
+  # Combine horizontally, then add base columns
+  wide <- if (length(perf_list) == 0) base else {
+    reduce(perf_list, ~ left_join(.x, .y, by = c("game_id", "row_id"))) %>%
+      left_join(base, by = c("game_id", "row_id"))
+  }
+
+  wide %>%
+    relocate(game_id, row_id, clock_display_value, home_score, away_score,
+             player_on_event, adjusted_players)
+}
+
+# -------------------------
+# Season build (game-by-game)
+# Expects: nba_pbp_2025 with at least:
+#   game_id, text, type_text, clock_display_value, home_score, away_score
+# Ensure proper within-game order beforehand if needed.
+# -------------------------
+build_season_wide <- function(nba_pbp_2025,
+                              player_list = NULL,        # your ~100 names (optional)
+                              keep_dperf = FALSE,        # TRUE => also make dPerf_<player> columns
+                              fill_na_zero = FALSE,      # TRUE => replace NA with 0 in Perf_/dPerf_
+                              min_points_per_game = 10    # per-game points cutoff
+) {
+  # If needed, sort within game:
+  # nba_pbp_2025 <- nba_pbp_2025 %>% arrange(game_id, period, event_num)
+
+  game_list <- nba_pbp_2025 %>%
+    group_by(game_id) %>%
+    group_split()
+
+  season_wide_3 <- map_df(
+    game_list,
+    ~ wide_for_game(.x,
+                    player_list = player_list,
+                    keep_dperf = keep_dperf,
+                    min_points_per_game = min_points_per_game)
+  )
+
+  if (fill_na_zero) {
+    perf_cols <- grepl("^Perf_", names(season_wide))
+    season_wide[perf_cols][is.na(season_wide[perf_cols])] <- 0
+    if (keep_dperf) {
+      dperf_cols <- grepl("^dPerf_", names(season_wide))
+      season_wide[dperf_cols][is.na(season_wide[dperf_cols])] <- 0
+    }
+  }
+
+  season_wide_3
+}
+
+# =========================
+# HOW TO RUN (examples)
+# =========================
+
+# 1) Auto-discover everyone, keep players with >= 10 pts in a game (Perf only):
+# season_wide <- build_season_wide(
+#   nba_pbp_2025,
+#   min_points_per_game = 10
+# )
+
+# 2) Use your curated 100-player list AND require >= 10 pts/game:
+# my_players <- c("Shai Gilgeous-Alexander", "Chet Holmgren", "Andrew Nembhard", ... )
+# season_wide <- build_season_wide(
+#   nba_pbp_2025,
+#   player_list = my_players,
+#   min_points_per_game = 10
+# )
+
+# 3) Also include dPerf_* columns and fill NA with 0:
+# season_wide <- build_season_wide(
+#   nba_pbp_2025,
+#   player_list = my_players,
+#   keep_dperf = TRUE,
+#   fill_na_zero = TRUE,
+#   min_points_per_game = 10
+# )
+
+```
+
+```{r}
+View(season_wide_3)
+```
+
+a
+
+```{r}
+# Get advanced box score data for a specific game ID from api
+#advanced_box_score <- hoopR::nba_boxscoreadvancedv2(game_id = "0022400001")
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+shots <- nba_pbp_2025 %>%
+  filter(shooting_play == TRUE) %>%
+  mutate(
+    made = if_else(scoring_play == TRUE, 1, 0),
+    shot_type = case_when(
+      grepl("3PT", type_text, ignore.case = TRUE) ~ "3PT",
+      grepl("Layup", type_text, ignore.case = TRUE) ~ "Layup",
+      grepl("Dunk", type_text, ignore.case = TRUE) ~ "Dunk",
+      grepl("Jump", type_text, ignore.case = TRUE) ~ "Jump Shot",
+      TRUE ~ "Other"
+    )
+  )
+
+```
+
+```{r}
+focus_teams <- c("Oklahoma City", "Boston", "Golden State", "Denver")
+focus_players <- c(201939, 1628369, 1629029, 2544)  # Curry, Tatum, Luka, LeBron
+
+# --- Team subset
+shots_focus_team <- shots %>%
+  filter(home_team_name %in% focus_teams | away_team_name %in% focus_teams)
+
+# --- Player subset
+shots_focus_player <- shots %>%
+  filter(athlete_id_1 %in% focus_players)
+
+
+```
+
+```{r}
+library(dplyr)
+library(stringr)
+library(ggplot2)
+
+player_summary <- pbp_2025 %>%
+  group_by(athlete_id_1) %>%
+  summarise(
+    total_points = sum(score_value, na.rm = TRUE),
+    total_assists = sum(str_detect(text, regex("assist", ignore_case = TRUE)), na.rm = TRUE),
+    total_steals = sum(str_detect(type_text, regex("Steal", ignore_case = TRUE)), na.rm = TRUE)
+  ) %>%
+  arrange(desc(total_points))
+
+```
+
+```{r}
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(patchwork)
+
+player_summary <- nba_pbp_2025 %>%
+  group_by(athlete_id_1) %>%
+  summarise(
+    total_points = sum(score_value, na.rm = TRUE),
+    total_assists = sum(str_detect(text, regex("assist", ignore_case = TRUE)), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+top_points  <- player_summary |> slice_max(total_points,  n = 10)
+top_assists <- player_summary |> slice_max(total_assists, n = 10)
+
+
+p_points <- ggplot(top_points,
+                   aes(x = reorder(as.factor(athlete_id_1), total_points),
+                       y = total_points, fill = total_points)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  labs(title = "Top 10 Players – Points",
+       x = "Player ID", y = "Total Points") +
+  theme_minimal(base_size = 13)
+
+
+p_assists <- ggplot(top_assists,
+                    aes(x = reorder(as.factor(athlete_id_1), total_assists),
+                        y = total_assists, fill = total_assists)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  labs(title = "Top 10 Players – Assists",
+       x = "Player ID", y = "Total Assists") +
+  theme_minimal(base_size = 13)
+
+
+p_points + p_assists 
+
+```
+
+```{r}
+
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
