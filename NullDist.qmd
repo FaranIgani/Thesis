@@ -105,7 +105,7 @@ g2 <- null_games_all %>%
 ggplot(g2, aes(x = game_time_min, y = sim_Perf)) +
   geom_step() +
   theme_minimal() +
-  labs(x = "Game time (min)", y = "Null performance (cumulative)")
+  labs(x = "Game time (min)", y = "Simulated Null Performance ", title = "One Simulated Trajectory  ")
 ```
 
 ```{r}
@@ -798,67 +798,6 @@ hottest_games
 ```
 
 ```{r}
-library(ggplot2)
-library(dplyr)
-
-for(p in players){
-
-  p_data <- heat_tables %>%
-    filter(player == p)
-
-  if(nrow(p_data) > 0){
-
-    print(
-      ggplot(p_data, aes(total_heat_area)) +
-        geom_histogram(bins = 15) +
-        theme_minimal() +
-        labs(
-          title = paste("Hot Area Distribution —", p),
-          x = "Total Heat Area (Game)",
-          y = "Count"
-        )
-    )
-  }
-}
-
-```
-
-```{r}
-for(p in players){
-
-  p_data <- heat_tables %>% filter(player == p)
-
-  if(nrow(p_data) > 0){
-
-    print(
-      ggplot(p_data, aes(x = total_heat_area)) +
-        geom_point(
-          aes(y = 0),
-          position = position_jitter(height = 0.005),
-          size = 3
-        ) +
-        theme_minimal() +
-        labs(
-          title = paste("Hot Game Areas:", p),
-          x = "Total Heat Area",
-          y = ""
-        ) +
-        theme(
-          axis.text.y = element_blank(),
-          axis.ticks.y = element_blank(),
-          panel.grid.major.y = element_blank(),
-          panel.grid.minor.y = element_blank()
-        ) +
-        coord_cartesian(ylim = c(-0.01, 0.01))
-    )
-  }
-}
-
-
-
-```
-
-```{r}
 #mean heat per player
 player_heat_stats <- heat_tables %>%
   group_by(player) %>%
@@ -870,19 +809,6 @@ player_heat_stats <- heat_tables %>%
   )
 
 player_heat_stats
-
-```
-
-```{r}
-ggplot(player_heat_stats,
-       aes(x = mean_heat, y = sd_heat)) +
-  geom_point() +
-  theme_minimal() +
-  labs(
-    title = "Mean vs SD of Hot Game Area",
-    x = "Mean Heat Area (Hot Games)",
-    y = "SD of Heat Area"
-  )
 
 ```
 
@@ -1512,17 +1438,20 @@ simulate_null_games_binned <- function(data, dperf_col, n_sims = 100, bin_width 
 }
 
 # example
-null_games_all_bin <- simulate_null_games_binned(shai_games, dperf_col = "dPerf_shai_gilgeous_alexander", n_sims = 100, bin_width = 2)
+null_games_all_bin_shai <- simulate_null_games_binned(shai_games, dperf_col = "dPerf_shai_gilgeous_alexander", n_sims = 1000, bin_width = 2)
 
-null_games_all_bin
+null_games_all_bin_shai
 ```
 
 ```{r}
-#write_csv(null_games_all_bin, "binned_null_shai.csv")
+null_games_all_bin_lebron <- simulate_null_games_binned(nba_full, dperf_col = "dPerf_luka_doncic", n_sims = 10000, bin_width = 2)
+
+null_games_all_bin_lebron
 ```
 
 ```{r}
-ggplot(null_games_all_bin,
+#1000 sims
+ggplot(null_games_all_bin_shai,
        aes(game_time_min,
            sim_perf,
            group = sim_game)) +
@@ -1530,6 +1459,25 @@ ggplot(null_games_all_bin,
   theme_minimal() +
   labs(x = "Game time (min)",
        y = "Null cumulative performance")
+```
+
+```{r}
+#write_csv(null_games_all_bin_shai, "binned_null_shai.csv")
+```
+
+```{r}
+#100 sims
+null_games_all_bin_shai_100 <- simulate_null_games_binned(shai_games, dperf_col = "dPerf_shai_gilgeous_alexander", n_sims = 100, bin_width = 2)
+
+ggplot(null_games_all_bin_shai_100,
+       aes(game_time_min,
+           sim_perf,
+           group = sim_game)) +
+  geom_step(alpha = 0.15) +
+  theme_minimal() +
+  labs(x = "Game time (min)",
+       y = "Null cumulative performance",
+       title = "Shai Simulated Null Trajectories")
 ```
 
 ```{r}
@@ -1765,6 +1713,74 @@ results <- map(players, function(p){
 ```
 
 ```{r}
+all_null_perf <- map_dfr(results, "null_perf")
+all_bounds <- map_dfr(results, "bounds")
+
+#plot simulated nulls
+ggplot(all_null_perf,
+       aes(game_time_min, sim_Perf, group = sim_game)) +
+  geom_step(alpha=.1, linewidth=.5) +
+  facet_wrap(~player, scales="free_y") +
+  theme_minimal()
+```
+
+```{r}
+# simulated nulls with bounds
+real_long <- map_dfr(players, function(p){
+  
+  perf_col  <- paste0("Perf_", p)
+  dperf_col <- paste0("dPerf_", p)
+
+  nba_full %>%
+    #filter to games player actually played
+    group_by(game_id) %>%
+    filter(sum(abs(.data[[dperf_col]]), na.rm = TRUE) > 10) %>%
+    ungroup() %>%
+    
+    # build real_long slice
+    select(game_id, game_time_min, !!perf_col) %>%
+    rename(obs_perf = !!perf_col) %>%
+    mutate(player = p) %>%
+    
+    #drop NA perf rows
+    filter(!is.na(obs_perf))
+
+})
+for(p in players){
+
+  p_null <- null_perf_all %>% filter(player == p)
+  p_lines <- trend_lines %>% filter(player == p)
+
+  print(
+    ggplot() +
+      geom_step(
+        data = p_null,
+        aes(game_time_min, sim_Perf, group = sim_game),
+        alpha = 0.15
+      ) +
+      geom_line(
+        data = p_lines,
+        aes(game_time_min, lower_line),
+        color = "red",
+        linewidth = 0.7
+      ) +
+      geom_line(
+        data = p_lines,
+        aes(game_time_min, upper_line),
+        color = "red",
+        linewidth = 0.7
+      ) +
+      theme_minimal() +
+      labs(
+        title = paste("Simulated Null Distribution for", p),
+        x = "Game Time (Minutes)",
+        y = "Null Cumulative Performance"
+      )
+  )
+}
+```
+
+```{r}
 #combine null and bounds
 all_null_perf <- map_dfr(results, "null_perf")
 all_bounds <- map_dfr(results, "bounds")
@@ -1938,5 +1954,78 @@ hottest_games_bin
 ```
 
 ```{r}
+top10_games_bin <- heat_tables_bin %>%
+  arrange(desc(total_heat_area)) %>%
+  slice(1:20)
 
+top10_games_bin
+```
+
+```{r}
+for(i in 1:nrow(top10_games_bin)){
+
+  p  <- top10_games_bin$player[i]
+  g  <- top10_games_bin$game_id[i]
+  area_val <- round(top10_games_bin$total_heat_area[i], 2)
+  time_val <- round(top10_games_bin$total_heat_time[i], 2)
+
+  b <- all_bounds %>%
+    filter(player == p) %>%
+    slice(1)
+
+  #real game
+  game_data <- real_long %>%
+    filter(player == p, game_id == g) %>%
+    arrange(game_time_min)
+
+  if(nrow(game_data) > 0){
+
+    game_data <- game_data %>%
+      mutate(
+        upper_line = b$upper_int + b$upper_slope * game_time_min,
+        lower_line = b$lower_int + b$lower_slope * game_time_min,
+        above = obs_perf > upper_line,
+        shade_ymin = upper_line,
+        shade_ymax = ifelse(above, obs_perf, upper_line)  # only shade when above
+      )
+
+    print(
+      ggplot(game_data, aes(game_time_min, obs_perf)) +
+
+        # shaded region above upper bound
+        geom_ribbon(aes(ymin = shade_ymin, ymax = shade_ymax),
+                    alpha = 0.25) +
+
+        # observed line (normal width)
+        geom_line(linewidth = 0.7) +
+
+        # bounds
+        geom_line(aes(y = upper_line), color = "red", linetype = "dashed", linewidth = 0.7) +
+        geom_line(aes(y = lower_line), color = "red", linetype = "dashed", linewidth = 0.7) +
+
+        theme_minimal() +
+        labs(
+          title = paste("Player:", p),
+          subtitle = paste("Game ID:", g, "| Total Heat Area:", area_val, "| Total Heat Minutes:", time_val),
+          x = "Game Time (minutes)",
+          y = "Cumulative Performance"
+        )
+    )
+  }
+}
+```
+
+```{r}
+#total heat area and time for players over the season
+player_heat_summary_bin <- heat_tables_bin %>%
+  group_by(player) %>%
+  summarise(
+    n_hot_games = n(),
+    total_heat_area = round(sum(total_heat_area, na.rm = TRUE), 2),
+    total_heat_time = round(sum(total_heat_time, na.rm = TRUE), 2),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_heat_area))
+
+player_heat_summary_bin
 ```
