@@ -15,7 +15,7 @@ library(purrr)
 library(tibble)
 library(ggplot2)
 
-nba_full <- read.csv("full_1_94_dperf.csv")
+nba_full <- read.csv("full_1_57_dperf.csv")
 nba_full <- nba_full %>%
   filter(game_time_min <= 48)
 
@@ -43,93 +43,25 @@ filter_player_games <- function(data, player, threshold = 10){
 ```{r}
 #| label: sim_null
 #equal number of sims to observed games
-simulate_null_player_binned <- function(data, player, bin_width = 2, game_length = 48) {
-
-  dperf_col <- paste0("dPerf_", player)
-
-  # add bin column (0..23 for 48 mins with 2-min bins)
-  dat <- data %>%
-    filter(game_time_min >= 0, game_time_min <= game_length) %>%
-    mutate(
-      bin = floor(game_time_min / bin_width),
-      bin = pmin(bin, floor((game_length - 1e-9) / bin_width)) # keep 48 exactly from becoming bin 24
-    )
-
-  # pooled dPerf distribution (same as before)
-  dperf_pool <- dat %>%
-    filter(!is.na(.data[[dperf_col]]), .data[[dperf_col]] != 0) %>%
-    pull(.data[[dperf_col]])
-
-  # empirical distribution of event counts per bin across games
-  # for each bin, we store a vector of counts (one per game, including 0s)
-  games <- sort(unique(dat$game_id))
-  bins  <- 0:floor((game_length - 1e-9) / bin_width)
-
-  k_by_bin <- map(bins, function(b) {
-    dat %>%
-      filter(bin == b, !is.na(.data[[dperf_col]]), .data[[dperf_col]] != 0) %>%
-      count(game_id, name = "k") %>%
-      right_join(tibble(game_id = games), by = "game_id") %>%
-      mutate(k = replace_na(k, 0L)) %>%
-      pull(k)
-  })
-  names(k_by_bin) <- as.character(bins)
-
-  # simulate one "season" of null games (same number of games as input data has)
-  sim_games <- seq_along(unique(dat$game_id))
-
-  map_dfr(sim_games, function(g) {
-
-    map_dfr(bins, function(b) {
-
-      k_vec <- k_by_bin[[as.character(b)]]
-      if (length(k_vec) == 0) k_vec <- 0L
-
-      k <- sample(k_vec, 1)
-
-      if (k == 0) {
-        return(tibble(
-          player = player,
-          sim_game = g,
-          bin = b,
-          event_id = integer(0),
-          game_time_min = numeric(0),
-          sim_dPerf = numeric(0)
-        ))
-      }
-
-      bin_start <- b * bin_width
-      bin_end   <- min((b + 1) * bin_width, game_length)
-
-      tibble(
-        player = player,
-        sim_game = g,
-        bin = b,
-        event_id = seq_len(k),
-        game_time_min = sort(runif(k, bin_start, bin_end)),
-        sim_dPerf = sample(dperf_pool, k, replace = TRUE)
-      )
-    })
-
-  })
-}
-
-# specific number of sims (1000)
-# simulate_null_player_binned <- function(data, player, bin_width = 2, game_length = 48, n_sims = 1000) {
+# simulate_null_player_binned <- function(data, player, bin_width = 2, game_length = 48) {
 # 
 #   dperf_col <- paste0("dPerf_", player)
 # 
+#   # add bin column (0..23 for 48 mins with 2-min bins)
 #   dat <- data %>%
 #     filter(game_time_min >= 0, game_time_min <= game_length) %>%
 #     mutate(
 #       bin = floor(game_time_min / bin_width),
-#       bin = pmin(bin, floor((game_length - 1e-9) / bin_width))
+#       bin = pmin(bin, floor((game_length - 1e-9) / bin_width)) # keep 48 exactly from becoming bin 24
 #     )
 # 
+#   # pooled dPerf distribution (same as before)
 #   dperf_pool <- dat %>%
 #     filter(!is.na(.data[[dperf_col]]), .data[[dperf_col]] != 0) %>%
 #     pull(.data[[dperf_col]])
 # 
+#   # empirical distribution of event counts per bin across games
+#   # for each bin, we store a vector of counts (one per game, including 0s)
 #   games <- sort(unique(dat$game_id))
 #   bins  <- 0:floor((game_length - 1e-9) / bin_width)
 # 
@@ -138,12 +70,15 @@ simulate_null_player_binned <- function(data, player, bin_width = 2, game_length
 #       filter(bin == b, !is.na(.data[[dperf_col]]), .data[[dperf_col]] != 0) %>%
 #       count(game_id, name = "k") %>%
 #       right_join(tibble(game_id = games), by = "game_id") %>%
-#       mutate(k = ifelse(is.na(k), 0L, k)) %>%
+#       mutate(k = replace_na(k, 0L)) %>%
 #       pull(k)
 #   })
 #   names(k_by_bin) <- as.character(bins)
 # 
-#   map_dfr(seq_len(n_sims), function(g) {
+#   # simulate one "season" of null games (same number of games as input data has)
+#   sim_games <- seq_along(unique(dat$game_id))
+# 
+#   map_dfr(sim_games, function(g) {
 # 
 #     map_dfr(bins, function(b) {
 # 
@@ -175,8 +110,73 @@ simulate_null_player_binned <- function(data, player, bin_width = 2, game_length
 #         sim_dPerf = sample(dperf_pool, k, replace = TRUE)
 #       )
 #     })
+# 
 #   })
 # }
+
+# specific number of sims (1000)
+simulate_null_player_binned <- function(data, player, bin_width = 2, game_length = 48, n_sims = 1000) {
+
+  dperf_col <- paste0("dPerf_", player)
+
+  dat <- data %>%
+    filter(game_time_min >= 0, game_time_min <= game_length) %>%
+    mutate(
+      bin = floor(game_time_min / bin_width),
+      bin = pmin(bin, floor((game_length - 1e-9) / bin_width))
+    )
+
+  dperf_pool <- dat %>%
+    filter(!is.na(.data[[dperf_col]]), .data[[dperf_col]] != 0) %>%
+    pull(.data[[dperf_col]])
+
+  games <- sort(unique(dat$game_id))
+  bins  <- 0:floor((game_length - 1e-9) / bin_width)
+
+  k_by_bin <- map(bins, function(b) {
+    dat %>%
+      filter(bin == b, !is.na(.data[[dperf_col]]), .data[[dperf_col]] != 0) %>%
+      count(game_id, name = "k") %>%
+      right_join(tibble(game_id = games), by = "game_id") %>%
+      mutate(k = ifelse(is.na(k), 0L, k)) %>%
+      pull(k)
+  })
+  names(k_by_bin) <- as.character(bins)
+
+  map_dfr(seq_len(n_sims), function(g) {
+
+    map_dfr(bins, function(b) {
+
+      k_vec <- k_by_bin[[as.character(b)]]
+      if (length(k_vec) == 0) k_vec <- 0L
+
+      k <- sample(k_vec, 1)
+
+      if (k == 0) {
+        return(tibble(
+          player = player,
+          sim_game = g,
+          bin = b,
+          event_id = integer(0),
+          game_time_min = numeric(0),
+          sim_dPerf = numeric(0)
+        ))
+      }
+
+      bin_start <- b * bin_width
+      bin_end   <- min((b + 1) * bin_width, game_length)
+
+      tibble(
+        player = player,
+        sim_game = g,
+        bin = b,
+        event_id = seq_len(k),
+        game_time_min = sort(runif(k, bin_start, bin_end)),
+        sim_dPerf = sample(dperf_pool, k, replace = TRUE)
+      )
+    })
+  })
+}
 ```
 
 ```{r}
@@ -459,7 +459,7 @@ results <- map(players, function(p) {
 
   filtered <- filter_player_games(nba_full, p, threshold = 10)
 
-  null_events <- simulate_null_player_binned(filtered, p) #add this:, n_sims = 1000
+  null_events <- simulate_null_player_binned(filtered, p, n_sims = 1000) #add this:, n_sims = 1000
 
   null_perf <- build_null_perf(null_events)
 
@@ -560,6 +560,102 @@ for (p in players) {
       )
   )
 }
+```
+
+## Some Checks
+
+```{r}
+#| label: creating final null and obs value for each game
+
+null_final_perf <- all_null_perf %>%
+  arrange(player, sim_game, game_time_min) %>%
+  group_by(player, sim_game) %>%
+  summarise(
+    final_perf = last(sim_Perf),
+    .groups = "drop"
+  )
+
+obs_final_perf <- real_long %>%
+  arrange(player, game_id, game_time_min) %>%
+  group_by(player, game_id) %>%
+  summarise(
+    final_perf = last(obs_perf),
+    .groups = "drop"
+  )
+
+
+```
+
+```{r}
+#| label: dist. of end performnace value of null vs obs
+
+for (p in players) {
+
+  p_null <- null_final_perf %>%
+    filter(player == p) %>%
+    mutate(type = "Null")
+
+  p_obs <- obs_final_perf %>%
+    filter(player == p) %>%
+    mutate(type = "Observed")
+
+  plot_df <- bind_rows(p_null, p_obs)
+
+  print(
+    ggplot(plot_df, aes(x = final_perf, fill = type)) +
+      geom_histogram(
+        alpha = 0.5,
+        bins = 30,
+        position = "identity"
+      ) +
+      theme_minimal() +
+      labs(
+        title = paste("End-of-Game Performance Distribution:", p),
+        x = "Final Performance",
+        y = "Count",
+        fill = ""
+      )
+  )
+}
+
+```
+
+```{r}
+#| label: Null density with observed histogram
+
+for (p in players) {
+
+  p_null <- null_final_perf %>%
+    filter(player == p)
+
+  p_obs <- obs_final_perf %>%
+    filter(player == p)
+
+  print(
+    ggplot() +
+      geom_histogram(
+        data = p_obs,
+        aes(x = final_perf, y = after_stat(density)),
+        bins = 15,
+        fill = "deepskyblue",
+        alpha = 0.45
+      ) +
+      geom_density(
+        data = p_null,
+        aes(x = final_perf),
+        color = "black",
+        linewidth = .86
+      ) +
+      theme_minimal() +
+      labs(
+        title = paste("End-of-Game Performance:", p),
+        subtitle = "Blue histogram = observed games, red curve = simulated null density",
+        x = "Final Performance",
+        y = "Density"
+      )
+  )
+}
+
 ```
 
 ## Heat Area
@@ -995,7 +1091,7 @@ ggplot(
     alpha = 0.7
   ) +
   facet_wrap(~type, scales = "fixed") +
-  coord_cartesian(xlim = c(0, 200)) +
+  coord_cartesian(xlim = c(0, 200), ylim = c(0,500)) +
   theme_minimal() +
   labs(
     title = "Heat Area Distribution (All Games)",
@@ -1145,36 +1241,6 @@ hot_game_counts <- total_player_heat_summary %>%
   )
 
 hot_game_counts
-```
-
-```{r}
-for (p in players) {
-
-  null_val <- total_player_heat_summary_null %>%
-    filter(player == p) %>%
-    pull(n_hot_games)
-
-  obs_val <- total_player_heat_summary %>%
-    filter(player == p) %>%
-    pull(n_hot_games)
-
-  df <- tibble(
-    type = c("Null", "Observed"),
-    n_hot_games = c(null_val, obs_val)
-  )
-
-  print(
-    ggplot(df, aes(x = type, y = n_hot_games, fill = type)) +
-      geom_col(width = .6) +
-      theme_minimal() +
-      labs(
-        title = paste("Number of Hot Games:", p),
-        x = "",
-        y = "Hot Games"
-      ) +
-      guides(fill = "none")
-  )
-}
 ```
 
 ```{r}

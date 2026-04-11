@@ -2623,30 +2623,25 @@ library(dplyr)
 library(stringr)
 library(purrr)
 
-# 94 players 28+ min
+# 57 players 28+ min
 players <- c(
   "Shai Gilgeous-Alexander","Tyrese Maxey","Josh Hart","Devin Booker","Mikal Bridges",
   "Nikola Jokic","OG Anunoby","Kevin Durant","Jayson Tatum","Anthony Edwards",
   "De'Aaron Fox","Jamal Murray","Damian Lillard","Kyrie Irving","Trae Young",
-  "DeMar DeRozan","Jalen Johnson","Jalen Brunson","Tyler Herro","Luka Doncic",
-  "James Harden","Fred VanVleet","Zach LaVine","Cade Cunningham","Trey Murphy III",
+  "DeMar DeRozan","Jalen Brunson","Tyler Herro","Luka Doncic",
+  "James Harden","Zach LaVine","Cade Cunningham",
   "Karl-Anthony Towns","Austin Reaves","LeBron James","Domantas Sabonis",
-  "Kelly Oubre Jr.","Paolo Banchero","Bam Adebayo","Jaylen Brown",
+  "Paolo Banchero","Bam Adebayo","Jaylen Brown",
   "Giannis Antetokounmpo","Derrick White","Tyrese Haliburton","Anthony Davis",
-  "Victor Wembanyama","Rudy Gobert","Jalen Green","Jalen Williams","Jimmy Butler",
-  "Stephen Curry","LaMelo Ball","Donovan Mitchell","Ja Morant","Joel Embiid",
+  "Victor Wembanyama","Rudy Gobert","Jalen Green","Jalen Williams",
+  "Stephen Curry","LaMelo Ball","Donovan Mitchell","Ja Morant",
 
-  # added
-  "Ivica Zubac","Toumani Camara","Norman Powell","Herbert Jones","Amen Thompson",
-  "P.J. Washington","Jaden McDaniels","Dillon Brooks","Brook Lopez","Miles Bridges",
-  "Rui Hachimura","Malik Monk","Cameron Johnson","Alperen Sengun","Keyonte George",
-  "Shaedon Sharpe","Cam Thomas","Devin Vassell","Jrue Holiday","Myles Turner",
-  "Jabari Smith Jr.","Deni Avdija","Walker Kessler","Bub Carrington","Grant Williams",
-  "Jaden Ivey","Bennedict Mathurin","Jaren Jackson Jr.",
-  "Kentavious Caldwell-Pope","Jakob Poeltl","Jordan Poole","Gradey Dick",
-  "Luguentz Dort","Andrew Nembhard","Dorian Finney-Smith","Kristaps Porzingis",
-  "Jalen Suggs","Payton Pritchard","Aaron Gordon", "Chris Paul", "Al Horford", 
-  "Naz Reid", "Chet Holmgren", "Klay Thompson"
+  # remaining added players
+  "P.J. Washington","Jaden McDaniels","Dillon Brooks",
+  "Miles Bridges","Malik Monk","Jrue Holiday","Myles Turner", 
+  "Jordan Poole","Kristaps Porzingis",
+  "Payton Pritchard","Aaron Gordon","Chris Paul","Al Horford","Naz Reid",
+  "Chet Holmgren","Klay Thompson"
 )
 
 options(scipen = 999)
@@ -2857,12 +2852,12 @@ process_one_game <- function(game_df, players) {
   wide
 }
 
-full_1_94_dperf <- nba_pbp_2025 %>%
+full_1_57_dperf <- nba_pbp_2025 %>%
   group_by(game_id) %>%
   group_split() %>%
   map_df(~ process_one_game(.x, players))
 ```
 
 ```{r}
-readr::write_csv(full_1_94_dperf, "full_1_94_dperf.csv")
+readr::write_csv(full_1_57_dperf, "full_1_57_dperf.csv")
 ```
