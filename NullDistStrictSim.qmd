@@ -1,0 +1,1014 @@
+---
+title: "NullDistFinal"
+format: html
+editor: visual
+embed-resources: true
+code-tools: true
+---
+
+## Data
+
+```{r}
+#| label: data
+
+library(tidyverse)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+
+nba_full <- read.csv("full_1_57_dperf.csv")
+nba_full <- nba_full %>%
+  filter(game_time_min <= 48)
+
+
+dperf_cols <- names(nba_full)[grepl("^dPerf_", names(nba_full))]
+
+
+players <- names(nba_full) %>%
+  str_subset("^Perf_") %>%
+  str_remove("^Perf_")
+
+filter_player_games <- function(data, player, threshold = 10){
+
+  dperf_col <- paste0("dPerf_", player)
+
+  data %>%
+    group_by(game_id) %>%
+    filter(sum(abs(.data[[dperf_col]]), na.rm = TRUE) > threshold) %>%
+    ungroup()
+}
+```
+
+## Simulated null and Bounds
+
+```{r}
+#| label: sim_null
+#equal number of sims to observed games
+# simulate_null_player_binned <- function(data, player, bin_width = 2, game_length = 48) {
+# 
+#   dperf_col <- paste0("dPerf_", player)
+# 
+#   # add bin column (0..23 for 48 mins with 2-min bins)
+#   dat <- data %>%
+#     filter(game_time_min >= 0, game_time_min <= game_length) %>%
+#     mutate(
+#       bin = floor(game_time_min / bin_width),
+#       bin = pmin(bin, floor((game_length - 1e-9) / bin_width)) # keep 48 exactly from becoming bin 24
+#     )
+# 
+#   # pooled dPerf distribution (same as before)
+#   dperf_pool <- dat %>%
+#     filter(!is.na(.data[[dperf_col]]), .data[[dperf_col]] != 0) %>%
+#     pull(.data[[dperf_col]])
+# 
+#   # empirical distribution of event counts per bin across games
+#   # for each bin, we store a vector of counts (one per game, including 0s)
+#   games <- sort(unique(dat$game_id))
+#   bins  <- 0:floor((game_length - 1e-9) / bin_width)
+# 
+#   k_by_bin <- map(bins, function(b) {
+#     dat %>%
+#       filter(bin == b, !is.na(.data[[dperf_col]]), .data[[dperf_col]] != 0) %>%
+#       count(game_id, name = "k") %>%
+#       right_join(tibble(game_id = games), by = "game_id") %>%
+#       mutate(k = replace_na(k, 0L)) %>%
+#       pull(k)
+#   })
+#   names(k_by_bin) <- as.character(bins)
+# 
+#   # simulate one "season" of null games (same number of games as input data has)
+#   sim_games <- seq_along(unique(dat$game_id))
+# 
+#   map_dfr(sim_games, function(g) {
+# 
+#     map_dfr(bins, function(b) {
+# 
+#       k_vec <- k_by_bin[[as.character(b)]]
+#       if (length(k_vec) == 0) k_vec <- 0L
+# 
+#       k <- sample(k_vec, 1)
+# 
+#       if (k == 0) {
+#         return(tibble(
+#           player = player,
+#           sim_game = g,
+#           bin = b,
+#           event_id = integer(0),
+#           game_time_min = numeric(0),
+#           sim_dPerf = numeric(0)
+#         ))
+#       }
+# 
+#       bin_start <- b * bin_width
+#       bin_end   <- min((b + 1) * bin_width, game_length)
+# 
+#       tibble(
+#         player = player,
+#         sim_game = g,
+#         bin = b,
+#         event_id = seq_len(k),
+#         game_time_min = sort(runif(k, bin_start, bin_end)),
+#         sim_dPerf = sample(dperf_pool, k, replace = TRUE)
+#       )
+#     })
+# 
+#   })
+# }
+
+# specific number of sims (1000)
+simulate_null_player_binned <- function(data, player, bin_width = 2, game_length = 48, n_sims = 1000) {
+
+  dperf_col <- paste0("dPerf_", player)
+
+  dat <- data %>%
+    filter(game_time_min >= 0, game_time_min <= game_length) %>%
+    mutate(
+      bin = floor(game_time_min / bin_width),
+      bin = pmin(bin, floor((game_length - 1e-9) / bin_width))
+    )
+
+  dperf_pool <- dat %>%
+    filter(!is.na(.data[[dperf_col]]), .data[[dperf_col]] != 0) %>%
+    pull(.data[[dperf_col]])
+
+  games <- sort(unique(dat$game_id))
+  bins  <- 0:floor((game_length - 1e-9) / bin_width)
+
+  k_by_bin <- map(bins, function(b) {
+    dat %>%
+      filter(bin == b, !is.na(.data[[dperf_col]]), .data[[dperf_col]] != 0) %>%
+      count(game_id, name = "k") %>%
+      right_join(tibble(game_id = games), by = "game_id") %>%
+      mutate(k = ifelse(is.na(k), 0L, k)) %>%
+      pull(k)
+  })
+  names(k_by_bin) <- as.character(bins)
+
+  map_dfr(seq_len(n_sims), function(g) {
+
+    map_dfr(bins, function(b) {
+
+      k_vec <- k_by_bin[[as.character(b)]]
+      if (length(k_vec) == 0) k_vec <- 0L
+
+      k <- sample(k_vec, 1)
+
+      if (k == 0) {
+        return(tibble(
+          player = player,
+          sim_game = g,
+          bin = b,
+          event_id = integer(0),
+          game_time_min = numeric(0),
+          sim_dPerf = numeric(0)
+        ))
+      }
+
+      bin_start <- b * bin_width
+      bin_end   <- min((b + 1) * bin_width, game_length)
+
+      tibble(
+        player = player,
+        sim_game = g,
+        bin = b,
+        event_id = seq_len(k),
+        game_time_min = sort(runif(k, bin_start, bin_end)),
+        sim_dPerf = sample(dperf_pool, k, replace = TRUE)
+      )
+    })
+  })
+}
+```
+
+```{r}
+#| label: get smoothed bounds
+
+library(tidyverse)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+
+# 1) Build simulation matrix on a common time grid
+build_sim_matrix_from_df <- function(
+  df,
+  sim_col = "sim_game",
+  time_col = "game_time_min",
+  value_col = "sim_Perf",
+  t_grid = NULL,
+  T_max = 48,
+  grid_by = 1/60
+) {
+  if (is.null(t_grid)) {
+    t_grid <- seq(0, T_max, by = grid_by)
+  }
+  t_grid <- sort(unique(t_grid))
+
+  sim_ids <- sort(unique(df[[sim_col]]))
+  B <- length(sim_ids)
+  TT <- length(t_grid)
+
+  sim_mat <- matrix(0, nrow = B, ncol = TT)
+  rownames(sim_mat) <- sim_ids
+  colnames(sim_mat) <- t_grid
+
+  for (i in seq_along(sim_ids)) {
+    sid <- sim_ids[i]
+
+    d <- df %>%
+      filter(.data[[sim_col]] == sid) %>%
+      arrange(.data[[time_col]]) %>%
+      select(all_of(c(time_col, value_col)))
+
+    times <- d[[time_col]]
+    vals  <- d[[value_col]]
+
+    if (length(times) == 0) {
+      sim_mat[i, ] <- 0
+      next
+    }
+
+    # if duplicate event times exist, keep the last cumulative value
+    if (anyDuplicated(times)) {
+      keep <- !duplicated(times, fromLast = TRUE)
+      times <- times[keep]
+      vals  <- vals[keep]
+    }
+
+    sim_mat[i, ] <- approx(
+      x = c(0, times),
+      y = c(0, vals),
+      xout = t_grid,
+      method = "constant",
+      f = 0,
+      rule = 2,
+      ties = "ordered"
+    )$y
+  }
+
+  list(sim = sim_mat, t_grid = t_grid)
+}
+
+
+# 2) Build smoothed upper quantile band
+
+make_max_upper_bound <- function(sim_mat, t_grid) {
+
+  upper <- apply(sim_mat, 2, max, na.rm = TRUE)
+
+  tibble(
+    game_time_min = t_grid,
+    upper_line = upper
+  )
+}
+
+# .999 percentile
+# make_upper_bound <- function(sim_mat, t_grid, q = 0.999) {
+# 
+#   upper <- apply(sim_mat, 2, quantile, probs = q, na.rm = TRUE, type = 8)
+# 
+#   tibble(
+#     game_time_min = t_grid,
+#     upper_line = upper
+#   )
+# }
+
+# 3) Wrapper for one player's null trajectories
+
+get_upper_bound <- function(null_perf) {
+
+  sim_col   <- "sim_game"
+  time_col  <- "game_time_min"
+  value_col <- "sim_Perf"
+  T_max     <- 48
+  grid_by   <- 1/60
+
+  sim_obj <- build_sim_matrix_from_df(
+    df = null_perf,
+    sim_col = sim_col,
+    time_col = time_col,
+    value_col = value_col,
+    T_max = T_max,
+    grid_by = grid_by
+  )
+
+  upper_line <- apply(sim_obj$sim, 2, max, na.rm = TRUE)
+
+  tibble(
+    game_time_min = sim_obj$t_grid,
+    upper_line = upper_line
+  )
+}
+```
+
+```{r}
+#build nulls
+build_null_perf <- function(null_df){
+
+  null_df %>%
+    arrange(player, sim_game, game_time_min) %>%
+    group_by(player, sim_game) %>%
+    mutate(sim_Perf = cumsum(sim_dPerf)) %>%
+    ungroup()
+}
+```
+
+```{r}
+#| label: main function
+set.seed(1234)
+results <- map(players, function(p) {
+
+  cat("Processing:", p, "\n")
+
+  filtered <- filter_player_games(nba_full, p, threshold = 10)
+
+  null_events <- simulate_null_player_binned(filtered, p, n_sims = 1000) #add this:, n_sims = 1000
+
+  null_perf <- build_null_perf(null_events)
+
+  upper_bound <- get_upper_bound(null_perf)%>%
+  mutate(player = p)
+
+  list(
+    player = p,
+    null_perf = null_perf,
+    upper_bound = upper_bound
+  )
+})
+```
+
+```{r}
+#| label: attach nulls and bounds
+all_null_perf <- map_dfr(results, "null_perf")
+all_upper_bounds <- map_dfr(results, "upper_bound")
+```
+
+```{r}
+# write.csv(all_null_perf, "all_null_perf.csv", row.names = FALSE)
+write.csv(all_upper_bounds, "all_upper_bounds_max.csv", row.names = FALSE)
+```
+
+```{r}
+#| label: get real game data
+real_long <- map_dfr(players, function(p) {
+
+  perf_col  <- paste0("Perf_", p)
+  dperf_col <- paste0("dPerf_", p)
+
+  nba_full %>%
+    group_by(game_id) %>%
+    filter(sum(abs(.data[[dperf_col]]), na.rm = TRUE) > 10) %>%
+    ungroup() %>%
+    select(game_id, game_time_min, !!sym(perf_col)) %>%
+    rename(obs_perf = !!sym(perf_col)) %>%
+    mutate(player = p) %>%
+    filter(!is.na(obs_perf))
+})
+```
+
+```{r}
+#| label: plot simulated games
+for (p in players) {
+
+  p_null  <- all_null_perf %>% filter(player == p)
+  p_bound <- all_upper_bounds %>% filter(player == p)
+
+  print(
+    ggplot() +
+      geom_step(
+        data = p_null,
+        aes(x = game_time_min, y = sim_Perf, group = sim_game),
+        alpha = 0.22,
+        linewidth = 0.5,
+        color = "black"
+      ) +
+      geom_line(
+        data = p_bound,
+        aes(x = game_time_min, y = upper_line),
+        linewidth = 0.8,
+        color = "red"
+      ) +
+      theme_minimal() +
+      labs(
+        title = paste("Simulated Null Games with Upper Bound:", p),
+        x = "Game Time (Minutes)",
+        y = "Performance"
+      )
+  )
+}
+```
+
+```{r}
+#| label: plot real games
+for (p in players) {
+
+  p_real  <- real_long %>% filter(player == p)
+  p_bound <- all_upper_bounds %>% filter(player == p)
+
+  print(
+    ggplot() +
+      geom_step(
+        data = p_real,
+        aes(x = game_time_min, y = obs_perf, group = game_id),
+        alpha = 0.22,
+        linewidth = 0.5,
+        color = "black"
+      ) +
+      geom_line(
+        data = p_bound,
+        aes(x = game_time_min, y = upper_line),
+        linewidth = 0.8,
+        color = "red"
+      ) +
+      theme_minimal() +
+      labs(
+        title = paste("Observed Games with Upper Bound:", p),
+        x = "Game Time (Minutes)",
+        y = "Performance"
+      )
+  )
+}
+```
+
+## Some Checks
+
+```{r}
+#| label: creating final null and obs value for each game
+
+null_final_perf <- all_null_perf %>%
+  arrange(player, sim_game, game_time_min) %>%
+  group_by(player, sim_game) %>%
+  summarise(
+    final_perf = last(sim_Perf),
+    .groups = "drop"
+  )
+
+obs_final_perf <- real_long %>%
+  arrange(player, game_id, game_time_min) %>%
+  group_by(player, game_id) %>%
+  summarise(
+    final_perf = last(obs_perf),
+    .groups = "drop"
+  )
+
+
+```
+
+```{r}
+#| label: dist. of end performnace value of null vs obs
+
+for (p in players) {
+
+  p_null <- null_final_perf %>%
+    filter(player == p) %>%
+    mutate(type = "Null")
+
+  p_obs <- obs_final_perf %>%
+    filter(player == p) %>%
+    mutate(type = "Observed")
+
+  plot_df <- bind_rows(p_null, p_obs)
+
+  print(
+    ggplot(plot_df, aes(x = final_perf, fill = type)) +
+      geom_histogram(
+        alpha = 0.5,
+        bins = 30,
+        position = "identity"
+      ) +
+      theme_minimal() +
+      labs(
+        title = paste("End-of-Game Performance Distribution:", p),
+        x = "Final Performance",
+        y = "Count",
+        fill = ""
+      )
+  )
+}
+
+```
+
+```{r}
+#| label: Null density with observed histogram
+
+for (p in players) {
+
+  p_null <- null_final_perf %>%
+    filter(player == p)
+
+  p_obs <- obs_final_perf %>%
+    filter(player == p)
+
+  print(
+    ggplot() +
+      geom_histogram(
+        data = p_obs,
+        aes(x = final_perf, y = after_stat(density)),
+        bins = 15,
+        fill = "deepskyblue",
+        alpha = 0.45
+      ) +
+      geom_density(
+        data = p_null,
+        aes(x = final_perf),
+        color = "black",
+        linewidth = .86
+      ) +
+      theme_minimal() +
+      labs(
+        title = paste("End-of-Game Performance:", p),
+        subtitle = "Green histogram = observed games, red curve = simulated null density",
+        x = "Final Performance",
+        y = "Density"
+      )
+  )
+}
+
+```
+
+## Heat Area
+
+```{r}
+#| label: heat area function for real games
+
+detect_heat_intervals_with_area_compact <- function(player_name, real_long, all_upper_bounds,
+                                                    digits = 1, area_digits = 2) {
+
+  bound_df <- all_upper_bounds %>%
+    filter(player == player_name) %>%
+    arrange(game_time_min)
+
+  player_games <- real_long %>%
+    filter(player == player_name) %>%
+    distinct(game_id)
+
+  blocks <- real_long %>%
+    filter(player == player_name) %>%
+    arrange(game_id, game_time_min) %>%
+    mutate(
+      upper_line = approx(
+        x = bound_df$game_time_min,
+        y = bound_df$upper_line,
+        xout = game_time_min,
+        rule = 2
+      )$y,
+      excess = obs_perf - upper_line,
+      above = excess > 0
+    ) %>%
+    group_by(game_id) %>%
+    mutate(
+      block = cumsum(above != lag(above, default = first(above))),
+      dt = game_time_min - lag(game_time_min),
+      trap = ifelse(
+        above & lag(above, default = FALSE),
+        ((excess + lag(excess, default = 0)) / 2) * dt,
+        0
+      )
+    ) %>%
+    ungroup() %>%
+    filter(above) %>%
+    group_by(game_id, block) %>%
+    summarise(
+      t_in = min(game_time_min, na.rm = TRUE),
+      t_out = max(game_time_min, na.rm = TRUE),
+      area = sum(trap, na.rm = TRUE),
+      duration = t_out - t_in,
+      .groups = "drop"
+    ) %>%
+    mutate(
+      t_in = round(t_in, digits),
+      t_out = round(t_out, digits),
+      area = round(area, area_digits),
+      duration = round(duration, 2),
+      interval = paste0(t_in, "–", t_out)
+    )
+
+  heat_summary <- blocks %>%
+    group_by(game_id) %>%
+    summarise(
+      n_intervals = n(),
+      intervals = paste(interval, collapse = "; "),
+      areas = paste(area, collapse = "; "),
+      durations = paste(duration, collapse = "; "),
+      total_heat_area = round(sum(area), area_digits),
+      total_heat_time = round(sum(duration), 2),
+      .groups = "drop"
+    )
+
+  player_games %>%
+    left_join(heat_summary, by = "game_id") %>%
+    mutate(
+      n_intervals = ifelse(is.na(n_intervals), 0L, n_intervals),
+      intervals = ifelse(is.na(intervals), "", intervals),
+      areas = ifelse(is.na(areas), "", areas),
+      durations = ifelse(is.na(durations), "", durations),
+      total_heat_area = ifelse(is.na(total_heat_area), 0, total_heat_area),
+      total_heat_time = ifelse(is.na(total_heat_time), 0, total_heat_time)
+    ) %>%
+    arrange(game_id)
+}
+```
+
+```{r}
+#| label: heat area function for simulated games
+
+detect_heat_intervals_with_area_compact_null <- function(player_name, all_null_perf, all_upper_bounds,
+                                                         digits = 1, area_digits = 2) {
+
+  bound_df <- all_upper_bounds %>%
+    filter(player == player_name) %>%
+    arrange(game_time_min)
+
+  sim_games <- all_null_perf %>%
+    filter(player == player_name) %>%
+    distinct(sim_game)
+
+  blocks <- all_null_perf %>%
+    filter(player == player_name) %>%
+    arrange(sim_game, game_time_min) %>%
+    mutate(
+      upper_line = approx(
+        x = bound_df$game_time_min,
+        y = bound_df$upper_line,
+        xout = game_time_min,
+        rule = 2
+      )$y,
+      excess = sim_Perf - upper_line,
+      above = excess > 0
+    ) %>%
+    group_by(sim_game) %>%
+    mutate(
+      block = cumsum(above != lag(above, default = first(above))),
+      dt = game_time_min - lag(game_time_min),
+      trap = ifelse(
+        above & lag(above, default = FALSE),
+        ((excess + lag(excess, default = 0)) / 2) * dt,
+        0
+      )
+    ) %>%
+    ungroup() %>%
+    filter(above) %>%
+    group_by(sim_game, block) %>%
+    summarise(
+      t_in = min(game_time_min, na.rm = TRUE),
+      t_out = max(game_time_min, na.rm = TRUE),
+      area = sum(trap, na.rm = TRUE),
+      duration = t_out - t_in,
+      .groups = "drop"
+    ) %>%
+    mutate(
+      t_in = round(t_in, digits),
+      t_out = round(t_out, digits),
+      area = round(area, area_digits),
+      duration = round(duration, 2),
+      interval = paste0(t_in, "–", t_out)
+    )
+
+  heat_summary <- blocks %>%
+    group_by(sim_game) %>%
+    summarise(
+      n_intervals = n(),
+      intervals = paste(interval, collapse = "; "),
+      areas = paste(area, collapse = "; "),
+      durations = paste(duration, collapse = "; "),
+      total_heat_area = round(sum(area), area_digits),
+      total_heat_time = round(sum(duration), 2),
+      .groups = "drop"
+    )
+
+  sim_games %>%
+    left_join(heat_summary, by = "sim_game") %>%
+    mutate(
+      n_intervals = ifelse(is.na(n_intervals), 0L, n_intervals),
+      intervals = ifelse(is.na(intervals), "", intervals),
+      areas = ifelse(is.na(areas), "", areas),
+      durations = ifelse(is.na(durations), "", durations),
+      total_heat_area = ifelse(is.na(total_heat_area), 0, total_heat_area),
+      total_heat_time = ifelse(is.na(total_heat_time), 0, total_heat_time)
+    ) %>%
+    arrange(sim_game)
+}
+```
+
+```{r}
+#| label: heat table null
+heat_tables_null <- map_dfr(players, function(p) {
+
+  detect_heat_intervals_with_area_compact_null(
+    player_name = p,
+    all_null_perf = all_null_perf,
+    all_upper_bounds = all_upper_bounds
+  ) %>%
+    mutate(player = p) %>%
+    select(player, everything())
+
+})
+
+heat_tables_null
+```
+
+```{r}
+#| label: heat table obs
+heat_tables_obs <- map_dfr(players, function(p) {
+
+  detect_heat_intervals_with_area_compact(
+    player_name = p,
+    real_long = real_long,
+    all_upper_bounds = all_upper_bounds
+  ) %>%
+    mutate(player = p) %>%
+    select(player, everything())
+
+})
+
+heat_tables_obs
+```
+
+```{r}
+#| label: games with heat
+
+heat_tables_obs %>%
+  filter(total_heat_area > 0)
+
+heat_tables_null %>%
+  filter(total_heat_area > 0)
+```
+
+```{r}
+#| label: total heat for season 
+
+total_player_heat_summary <- heat_tables_obs %>%
+  filter(total_heat_area > 0)%>%
+  group_by(player) %>%
+  summarise(
+    n_hot_games = n(),
+    total_heat_area = round(sum(total_heat_area, na.rm = TRUE), 2),
+    total_heat_time = round(sum(total_heat_time, na.rm = TRUE), 2),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_heat_area))
+
+total_player_heat_summary
+```
+
+```{r}
+#| label: total heat for season null
+
+total_player_heat_summary_null <- heat_tables_null %>%
+  filter(total_heat_area > 0)%>%
+  group_by(player) %>%
+  summarise(
+    n_hot_games = n(),
+    total_heat_area = round(sum(total_heat_area, na.rm = TRUE), 2),
+    total_heat_time = round(sum(total_heat_time, na.rm = TRUE), 2),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_heat_area))
+
+total_player_heat_summary_null
+```
+
+## More Summary Stats + visuals
+
+```{r}
+#| label: top60 games
+
+top60_games_obs <- heat_tables_obs %>%
+  arrange(desc(total_heat_area)) %>%
+  slice(1:60)
+
+top60_games_obs
+```
+
+```{r}
+#| label: plot top 60 games
+for(i in 1:nrow(top60_games_obs)){
+
+  p  <- top60_games_obs$player[i]
+  g  <- top60_games_obs$game_id[i]
+  area_val <- round(top60_games_obs$total_heat_area[i], 2)
+  time_val <- round(top60_games_obs$total_heat_time[i], 2)
+
+  bound_df <- all_upper_bounds %>%
+    filter(player == p) %>%
+    arrange(game_time_min)
+
+  # real game
+  game_data <- real_long %>%
+    filter(player == p, game_id == g) %>%
+    arrange(game_time_min)
+
+  if(nrow(game_data) > 0){
+
+    game_data <- game_data %>%
+      mutate(
+        upper_line = approx(
+          x = bound_df$game_time_min,
+          y = bound_df$upper_line,
+          xout = game_time_min,
+          rule = 2
+        )$y,
+        above = obs_perf > upper_line,
+        shade_ymin = upper_line,
+        shade_ymax = ifelse(above, obs_perf, upper_line)
+      )
+
+    print(
+      ggplot(game_data, aes(game_time_min, obs_perf)) +
+
+        # shaded region above upper bound
+        geom_ribbon(
+          aes(ymin = shade_ymin, ymax = shade_ymax),
+          alpha = 0.25
+        ) +
+
+        # observed line
+        geom_line(linewidth = 0.7) +
+
+        # upper bound
+        geom_line(
+          aes(y = upper_line),
+          color = "red",
+          linetype = "dashed",
+          linewidth = 0.7
+        ) +
+
+        theme_minimal() +
+        labs(
+          title = paste("Player:", p),
+          subtitle = paste(
+            "Game ID:", g,
+            "| Total Heat Area:", area_val,
+            "| Total Heat Minutes:", time_val
+          ),
+          x = "Game Time (minutes)",
+          y = "Cumulative Performance"
+        )
+    )
+  }
+}
+```
+
+```{r}
+#| label: mean and sd
+player_heat_stats <- heat_tables_obs %>%
+    filter(total_heat_area > 0)%>%
+  group_by(player) %>%
+  summarise(
+    mean_heat = round(mean(total_heat_area), 2),
+    sd_heat   = round(sd(total_heat_area), 2),
+    n_hot_games = n(),
+    .groups = "drop"
+  )%>%
+  arrange(desc(mean_heat))
+
+player_heat_stats
+```
+
+```{r}
+#| label: plot mean and sd
+p <- ggplot(player_heat_stats,
+            aes(x = mean_heat,
+                y = sd_heat)) +
+  geom_point(size = 2) +
+  theme_minimal() +
+  labs(
+    title = "Mean vs SD of Hot Game Area",
+    x = "Mean Heat Area",
+    y = "SD Heat Area"
+  )
+
+p
+```
+
+```{r}
+#| label: plot mean and sd w/ player labels
+library(ggrepel)
+
+ggplot(player_heat_stats,
+       aes(x = mean_heat,
+           y = sd_heat,
+           label = player)) +
+  geom_point(size = 2) +
+  ggrepel::geom_text_repel(size = 3) +
+  theme_minimal() +
+  labs(
+    title = "Mean vs SD of Hot Game Area",
+    x = "Mean Heat Area",
+    y = "SD Heat Area"
+  )
+```
+
+```{r}
+#| label: summary stats (mean heat over all games)
+player_summary_table <- heat_tables_obs %>%
+  group_by(player) %>%
+  summarise(
+    total_games = n(),
+    total_hot_games = sum(total_heat_area > 0),
+    prop_hot_games = round(total_hot_games / total_games, 3),
+    mean_heat = round(mean(total_heat_area), 2),
+    max_heat = round(max(total_heat_area), 2),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(mean_heat))
+
+player_summary_table
+
+library(gt)
+player_summary_gt <- player_summary_table %>%
+  mutate(player = str_replace_all(player, "_", " "),
+       player = str_to_title(player)) %>%
+  gt() %>%
+  cols_label(
+    player = "Player",
+    total_games = "Total Games",
+    total_hot_games = "Hot Games",
+    prop_hot_games = "Proportion Hot",
+    mean_heat = "Mean Heat",
+    max_heat = "Max Heat"
+  ) %>%
+  fmt_number(
+    columns = c(mean_heat, max_heat),
+    decimals = 2
+  ) %>%
+  fmt_percent(
+    columns = prop_hot_games,
+    decimals = 1
+  ) %>%
+  tab_header(
+    title = "Player Heat Summary"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = c(total_games, total_hot_games, prop_hot_games, mean_heat, max_heat)
+  ) %>%
+  opt_row_striping()
+
+player_summary_gt
+```
+
+```{r}
+#| label: summary stats (mean heat of only hot games)
+player_summary_hot <- heat_tables_obs %>%
+  group_by(player) %>%
+  summarise(
+    total_games = n(),
+    total_hot_games = sum(total_heat_area > 0),
+    prop_hot_games = total_hot_games / total_games,
+    mean_heat_hot = ifelse(
+      total_hot_games > 0,
+      mean(total_heat_area[total_heat_area > 0]),
+      0
+    ),
+    max_heat = max(total_heat_area),
+    .groups = "drop"
+  )
+
+library(stringr)
+
+player_summary_hot_gt <- player_summary_hot %>%
+  arrange(desc(mean_heat_hot)) %>%
+  mutate(player = str_replace_all(player, "_", " "),
+       player = str_to_title(player)) %>%
+  gt() %>%
+  cols_label(
+    player = "Player",
+    total_games = "Total Games",
+    total_hot_games = "Hot Games",
+    prop_hot_games = "Proportion Hot",
+    mean_heat_hot = "Mean Heat",
+    max_heat = "Max Heat"
+  ) %>%
+  fmt_number(
+    columns = c(mean_heat_hot, max_heat),
+    decimals = 2
+  ) %>%
+  fmt_percent(
+    columns = prop_hot_games,
+    decimals = 1
+  ) %>%
+  tab_header(
+    title = "Player Heat Summary (Hot Games Only)"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = c(total_games, total_hot_games, prop_hot_games, mean_heat_hot, max_heat)
+  ) %>%
+  opt_row_striping()
+
+player_summary_hot_gt
+```
+
+```{r}
+#| label: upper bounds for player 
+ggplot(all_upper_bounds,
+       aes(x = game_time_min, y = upper_line, group = player)) +
+  geom_line(linewidth = .7, alpha = 0.4) +
+  theme_minimal() +
+  labs(
+    title = "Upper Bounds by Player",
+    x = "Game Time (Minutes)",
+    y = "Upper Bound"
+  )
+```
