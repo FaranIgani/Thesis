@@ -45,6 +45,22 @@ filter_player_games <- function(data, player, threshold = 10){
 }
 ```
 
+## Find Game
+
+```{r}
+nba_pbp_2025 <- hoopR::load_nba_pbp(season = 2025)
+game_info <- nba_pbp_2025 %>%
+  filter(game_id == 401705020)
+
+game_info %>%
+  select(
+    game_id,
+    game_date,
+    home_team_name,
+    away_team_name
+  )
+```
+
 ## Plot Simulated and real games with Strict Bound
 
 ```{r}
@@ -67,34 +83,34 @@ real_long <- map_dfr(players, function(p) {
 
 ```{r}
 #| label: plot simulated games
-for (p in players) {
-
-  p_null  <- all_null_perf %>% filter(player == p)
-  p_bound <- all_upper_bounds_max %>% filter(player == p)
-
-  print(
-    ggplot() +
-      geom_step(
-        data = p_null,
-        aes(x = game_time_min, y = sim_Perf, group = sim_game),
-        alpha = 0.22,
-        linewidth = 0.5,
-        color = "black"
-      ) +
-      geom_line(
-        data = p_bound,
-        aes(x = game_time_min, y = upper_line),
-        linewidth = 0.8,
-        color = "red"
-      ) +
-      theme_minimal() +
-      labs(
-        title = paste("Simulated Null Games with Upper Bound:", p),
-        x = "Game Time (Minutes)",
-        y = "Performance"
-      )
-  )
-}
+# for (p in players) {
+# 
+#   p_null  <- all_null_perf %>% filter(player == p)
+#   p_bound <- all_upper_bounds_max %>% filter(player == p)
+# 
+#   print(
+#     ggplot() +
+#       geom_step(
+#         data = p_null,
+#         aes(x = game_time_min, y = sim_Perf, group = sim_game),
+#         alpha = 0.22,
+#         linewidth = 0.5,
+#         color = "black"
+#       ) +
+#       geom_line(
+#         data = p_bound,
+#         aes(x = game_time_min, y = upper_line),
+#         linewidth = 0.8,
+#         color = "red"
+#       ) +
+#       theme_minimal() +
+#       labs(
+#         title = paste("Simulated Null Games with Upper Bound:", p),
+#         x = "Game Time (Minutes)",
+#         y = "Performance"
+#       )
+#   )
+# }
 ```
 
 ```{r}
@@ -115,34 +131,34 @@ ggplot(
 
 ```{r}
 #| label: plot real games
-for (p in players) {
-
-  p_real  <- real_long %>% filter(player == p)
-  p_bound <- all_upper_bounds_max %>% filter(player == p)
-
-  print(
-    ggplot() +
-      geom_step(
-        data = p_real,
-        aes(x = game_time_min, y = obs_perf, group = game_id),
-        alpha = 0.22,
-        linewidth = 0.5,
-        color = "black"
-      ) +
-      geom_line(
-        data = p_bound,
-        aes(x = game_time_min, y = upper_line),
-        linewidth = 0.8,
-        color = "red"
-      ) +
-      theme_minimal() +
-      labs(
-        title = paste("Observed Games with Upper Bound:", p),
-        x = "Game Time (Minutes)",
-        y = "Performance"
-      )
-  )
-}
+# for (p in players) {
+# 
+#   p_real  <- real_long %>% filter(player == p)
+#   p_bound <- all_upper_bounds_max %>% filter(player == p)
+# 
+#   print(
+#     ggplot() +
+#       geom_step(
+#         data = p_real,
+#         aes(x = game_time_min, y = obs_perf, group = game_id),
+#         alpha = 0.22,
+#         linewidth = 0.5,
+#         color = "black"
+#       ) +
+#       geom_line(
+#         data = p_bound,
+#         aes(x = game_time_min, y = upper_line),
+#         linewidth = 0.8,
+#         color = "red"
+#       ) +
+#       theme_minimal() +
+#       labs(
+#         title = paste("Observed Games with Upper Bound:", p),
+#         x = "Game Time (Minutes)",
+#         y = "Performance"
+#       )
+#   )
+# }
 ```
 
 ```{r}
@@ -177,81 +193,81 @@ ggplot() +
 ```
 
 ```{r}
-p <- "nikola_jokic"
-
-
-# biggest heat-area game
-big_game <- heat_tables_obs %>%
-  filter(player == p) %>%
-  arrange(desc(total_heat_area)) %>%
-  slice(1)
-
-g <- big_game$game_id
-area_val <- round(big_game$total_heat_area, 2)
-
-# max bound
-p_bound_max <- all_upper_bounds_max %>%
-  filter(player == p) %>%
-  arrange(game_time_min)
-
-plot_data <- real_long %>%
-  filter(player == p) %>%
-  arrange(game_id, game_time_min) %>%
-  mutate(
-    upper_line = approx(
-      x = p_bound_max$game_time_min,
-      y = p_bound_max$upper_line,
-      xout = game_time_min,
-      rule = 2
-    )$y,
-    is_big_game = game_id == g,
-    above = obs_perf > upper_line,
-    shade_ymin = upper_line,
-    shade_ymax = ifelse(is_big_game & above, obs_perf, upper_line)
-  )
-
-ggplot(plot_data, aes(x = game_time_min, y = obs_perf)) +
-  
-  # all games
-  geom_step(
-    aes(group = game_id),
-    color = "black",
-    alpha = 0.22,
-    linewidth = 0.45
-  ) +
-  
-  # 🔴 shaded max heat (only biggest game)
-  geom_ribbon(
-    data = plot_data %>% filter(is_big_game),
-    aes(ymin = shade_ymin, ymax = shade_ymax),
-    fill = "red",
-    alpha = 0.4
-  ) +
-  
-  # highlight that game
-  geom_step(
-    data = plot_data %>% filter(is_big_game),
-    aes(group = game_id),
-    color = "black",
-    linewidth = 0.9
-  ) +
-  
-  # max bound
-  geom_line(
-    data = p_bound_max,
-    aes(x = game_time_min, y = upper_line),
-    inherit.aes = FALSE,
-    color = "red",
-    linewidth = 1
-  ) +
-  
-  theme_minimal() +
-  labs(
-    title = "Jaylen Brown Observed Games with Max Bound",
-    subtitle = paste("Shaded game:", g, "| Heat Area:", area_val),
-    x = "Game Time (Minutes)",
-    y = "Cumulative Performance"
-  )
+# p <- "nikola_jokic"
+# 
+# 
+# # biggest heat-area game
+# big_game <- heat_tables_obs %>%
+#   filter(player == p) %>%
+#   arrange(desc(total_heat_area)) %>%
+#   slice(1)
+# 
+# g <- big_game$game_id
+# area_val <- round(big_game$total_heat_area, 2)
+# 
+# # max bound
+# p_bound_max <- all_upper_bounds_max %>%
+#   filter(player == p) %>%
+#   arrange(game_time_min)
+# 
+# plot_data <- real_long %>%
+#   filter(player == p) %>%
+#   arrange(game_id, game_time_min) %>%
+#   mutate(
+#     upper_line = approx(
+#       x = p_bound_max$game_time_min,
+#       y = p_bound_max$upper_line,
+#       xout = game_time_min,
+#       rule = 2
+#     )$y,
+#     is_big_game = game_id == g,
+#     above = obs_perf > upper_line,
+#     shade_ymin = upper_line,
+#     shade_ymax = ifelse(is_big_game & above, obs_perf, upper_line)
+#   )
+# 
+# ggplot(plot_data, aes(x = game_time_min, y = obs_perf)) +
+#   
+#   # all games
+#   geom_step(
+#     aes(group = game_id),
+#     color = "black",
+#     alpha = 0.22,
+#     linewidth = 0.45
+#   ) +
+#   
+#   # 🔴 shaded max heat (only biggest game)
+#   geom_ribbon(
+#     data = plot_data %>% filter(is_big_game),
+#     aes(ymin = shade_ymin, ymax = shade_ymax),
+#     fill = "red",
+#     alpha = 0.4
+#   ) +
+#   
+#   # highlight that game
+#   geom_step(
+#     data = plot_data %>% filter(is_big_game),
+#     aes(group = game_id),
+#     color = "black",
+#     linewidth = 0.9
+#   ) +
+#   
+#   # max bound
+#   geom_line(
+#     data = p_bound_max,
+#     aes(x = game_time_min, y = upper_line),
+#     inherit.aes = FALSE,
+#     color = "red",
+#     linewidth = 1
+#   ) +
+#   
+#   theme_minimal() +
+#   labs(
+#     title = "Jaylen Brown Observed Games with Max Bound",
+#     subtitle = paste("Shaded game:", g, "| Heat Area:", area_val),
+#     x = "Game Time (Minutes)",
+#     y = "Cumulative Performance"
+#   )
 ```
 
 ```{r}
@@ -541,87 +557,6 @@ detect_heat_intervals_with_area_compact <- function(player_name, real_long, all_
 ```
 
 ```{r}
-#| label: heat area function for simulated games
-
-detect_heat_intervals_with_area_compact_null <- function(player_name, all_null_perf, all_upper_bounds_max,
-                                                         digits = 1, area_digits = 2) {
-
-  bound_df <- all_upper_bounds_max %>%
-    filter(player == player_name) %>%
-    arrange(game_time_min)
-
-  sim_games <- all_null_perf %>%
-    filter(player == player_name) %>%
-    distinct(sim_game)
-
-  blocks <- all_null_perf %>%
-    filter(player == player_name) %>%
-    arrange(sim_game, game_time_min) %>%
-    mutate(
-      upper_line = approx(
-        x = bound_df$game_time_min,
-        y = bound_df$upper_line,
-        xout = game_time_min,
-        rule = 2
-      )$y,
-      excess = sim_Perf - upper_line,
-      above = excess > 0
-    ) %>%
-    group_by(sim_game) %>%
-    mutate(
-      block = cumsum(above != lag(above, default = first(above))),
-      dt = game_time_min - lag(game_time_min),
-      trap = ifelse(
-        above & lag(above, default = FALSE),
-        ((excess + lag(excess, default = 0)) / 2) * dt,
-        0
-      )
-    ) %>%
-    ungroup() %>%
-    filter(above) %>%
-    group_by(sim_game, block) %>%
-    summarise(
-      t_in = min(game_time_min, na.rm = TRUE),
-      t_out = max(game_time_min, na.rm = TRUE),
-      area = sum(trap, na.rm = TRUE),
-      duration = t_out - t_in,
-      .groups = "drop"
-    ) %>%
-    mutate(
-      t_in = round(t_in, digits),
-      t_out = round(t_out, digits),
-      area = round(area, area_digits),
-      duration = round(duration, 2),
-      interval = paste0(t_in, "–", t_out)
-    )
-
-  heat_summary <- blocks %>%
-    group_by(sim_game) %>%
-    summarise(
-      n_intervals = n(),
-      intervals = paste(interval, collapse = "; "),
-      areas = paste(area, collapse = "; "),
-      durations = paste(duration, collapse = "; "),
-      total_heat_area = round(sum(area), area_digits),
-      total_heat_time = round(sum(duration), 2),
-      .groups = "drop"
-    )
-
-  sim_games %>%
-    left_join(heat_summary, by = "sim_game") %>%
-    mutate(
-      n_intervals = ifelse(is.na(n_intervals), 0L, n_intervals),
-      intervals = ifelse(is.na(intervals), "", intervals),
-      areas = ifelse(is.na(areas), "", areas),
-      durations = ifelse(is.na(durations), "", durations),
-      total_heat_area = ifelse(is.na(total_heat_area), 0, total_heat_area),
-      total_heat_time = ifelse(is.na(total_heat_time), 0, total_heat_time)
-    ) %>%
-    arrange(sim_game)
-}
-```
-
-```{r}
 #| label: heat table obs
 heat_tables_obs <- map_dfr(players, function(p) {
 
@@ -802,7 +737,7 @@ ggplot(game_data, aes(game_time_min, obs_perf)) +
 ```{r}
 #| label: summary stats (mean heat of only hot games)
 player_summary_hot <- heat_tables_obs %>%
-  filter(player != "josh_hart") %>%   #  add if want to remove 
+  filter(player != "josh_hart") %>%
   group_by(player) %>%
   summarise(
     total_games = n(),
@@ -811,45 +746,36 @@ player_summary_hot <- heat_tables_obs %>%
     mean_heat_hot = ifelse(
       total_hot_games > 0,
       mean(total_heat_area[total_heat_area > 0]),
-      0
+      NA_real_
     ),
     max_heat = max(total_heat_area),
     .groups = "drop"
-  )
-  #filter(total_hot_games > 0)   # remove players with no heat
-library(stringr)
-library(gt)
-player_summary_hot_gt <- player_summary_hot %>%
+  ) %>%
+  filter(!is.na(mean_heat_hot))   # remove players with no mean heat
+library(kableExtra)
+player_summary_hot %>%
   arrange(desc(mean_heat_hot)) %>%
-  mutate(player = str_replace_all(player, "_", " "),
-       player = str_to_title(player)) %>%
-  gt() %>%
-  cols_label(
-    player = "Player",
-    total_games = "Total Games",
-    total_hot_games = "Hot Games",
-    prop_hot_games = "Proportion Hot",
-    mean_heat_hot = "Mean Heat",
-    max_heat = "Max Heat"
+  mutate(
+    player = str_replace_all(player, "_", " "),
+    player = str_to_title(player)
   ) %>%
-  fmt_number(
-    columns = c(mean_heat_hot, max_heat),
-    decimals = 2
+  rename(
+    `Player` = player,
+    `Total Games` = total_games,
+    `Hot Games` = total_hot_games,
+    `Proportion Hot` = prop_hot_games,
+    `Mean Heat` = mean_heat_hot,
+    `Max Heat` = max_heat
   ) %>%
-  fmt_percent(
-    columns = prop_hot_games,
-    decimals = 1
+  mutate(
+    `Mean Heat` = round(`Mean Heat`, 2),
+    `Max Heat` = round(`Max Heat`, 2),
+    `Proportion Hot` = round(`Proportion Hot` * 100, 1)
   ) %>%
-  tab_header(
-    title = "Player Heat Summary (Hot Games Only)"
-  ) %>%
-  cols_align(
-    align = "center",
-    columns = c(total_games, total_hot_games, prop_hot_games, mean_heat_hot, max_heat)
-  ) %>%
-  opt_row_striping()
-
-player_summary_hot_gt
+  kable(
+    caption = "Player Heat Summary (Hot Games Only)",
+    align = "c"
+  )
 ```
 
 ```{r}
@@ -980,6 +906,24 @@ ggplot(player_summary_hot,
 ```
 
 ```{r}
+obs_final_perf <- real_long %>%
+  arrange(player, game_id, game_time_min) %>%
+  group_by(player, game_id) %>%
+  summarise(
+    final_perf = last(obs_perf),
+    .groups = "drop"
+  )
+
+player_end_perf_summary <- obs_final_perf %>%
+  group_by(player) %>%
+  summarise(
+    n_games = n(),
+    mean_end_perf = mean(final_perf, na.rm = TRUE),
+    sd_end_perf = sd(final_perf, na.rm = TRUE),
+    min_end_perf = min(final_perf, na.rm = TRUE),
+    max_end_perf = max(final_perf, na.rm = TRUE),
+    .groups = "drop"
+  )
 
 clean_player <- function(x) {
   x %>%
